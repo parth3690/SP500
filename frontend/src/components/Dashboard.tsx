@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 
-import { fetchMovers, fetchCrossovers, apiBaseUrl } from "@/lib/api";
+import { fetchMovers, fetchCrossovers, fetchOversold, apiBaseUrl } from "@/lib/api";
 import { addDays, toLocalISODate } from "@/lib/date";
-import type { MoversResponse, MoverRow, CrossoversResponse } from "@/lib/types";
+import type { MoversResponse, MoverRow, CrossoversResponse, OversoldResponse } from "@/lib/types";
 import MoversTable from "@/components/MoversTable";
 import CrossoverTable from "@/components/CrossoverTable";
+import OversoldTable from "@/components/OversoldTable";
 import SectorSummary from "@/components/SectorSummary";
 import MoversBarChart from "@/components/MoversBarChart";
 import Heatmap from "@/components/Heatmap";
@@ -39,8 +40,10 @@ export default function Dashboard() {
 
   const [data, setData] = useState<MoversResponse | null>(null);
   const [crossoverData, setCrossoverData] = useState<CrossoversResponse | null>(null);
+  const [oversoldData, setOversoldData] = useState<OversoldResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [crossoverLoading, setCrossoverLoading] = useState<boolean>(false);
+  const [oversoldLoading, setOversoldLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const intervalRef = useRef<number | null>(null);
@@ -78,10 +81,21 @@ export default function Dashboard() {
       const payload = await fetchCrossovers({ threshold: 2.0, refresh: opts?.refresh });
       setCrossoverData(payload);
     } catch (e) {
-      // Crossover errors are non-critical, don't overwrite the main error
       console.error("Crossover fetch failed:", e);
     } finally {
       setCrossoverLoading(false);
+    }
+  };
+
+  const runOversoldFetch = async (opts?: { refresh?: boolean }) => {
+    setOversoldLoading(true);
+    try {
+      const payload = await fetchOversold({ threshold: 30, refresh: opts?.refresh });
+      setOversoldData(payload);
+    } catch (e) {
+      console.error("RSI oversold fetch failed:", e);
+    } finally {
+      setOversoldLoading(false);
     }
   };
 
@@ -90,9 +104,10 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, end, limit]);
 
-  // Fetch crossover data on mount and when user triggers refresh
+  // Fetch crossover + oversold data on mount and when user triggers refresh
   useEffect(() => {
     void runCrossoverFetch();
+    void runOversoldFetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -159,13 +174,32 @@ export default function Dashboard() {
             Download CSV
           </a>
           <button
-            className="rounded-md border border-slate-700 px-3 py-2 text-sm font-medium hover:bg-slate-900"
+            className={clsx(
+              "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors",
+              loading || crossoverLoading
+                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 cursor-wait"
+                : "bg-emerald-600 text-white hover:bg-emerald-500"
+            )}
+            disabled={loading && crossoverLoading && oversoldLoading}
             onClick={() => {
               void runFetch({ refresh: true });
               void runCrossoverFetch({ refresh: true });
+              void runOversoldFetch({ refresh: true });
             }}
           >
-            Refresh now
+            {loading || crossoverLoading || oversoldLoading ? (
+              <>
+                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-amber-400/40 border-t-amber-400" />
+                Refreshing...
+              </>
+            ) : (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                  <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H4.28a.75.75 0 00-.75.75v3.955a.75.75 0 001.5 0v-2.134l.246.245A7 7 0 0016.732 11.5a.75.75 0 10-1.42-.076zm-10.624-2.85A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h3.955a.75.75 0 00.75-.75V3.214a.75.75 0 10-1.5 0v2.134l-.246-.245A7 7 0 003.268 8.5a.75.75 0 001.42.074z" clipRule="evenodd" />
+                </svg>
+                Refresh All Data
+              </>
+            )}
           </button>
         </div>
       </header>
@@ -334,6 +368,29 @@ export default function Dashboard() {
         <div className="mt-8 text-sm text-slate-400">Loading crossover signals…</div>
       ) : null}
 
+      {/* ─── Weekly RSI Oversold Section ─── */}
+      {oversoldData ? (
+        <section className="mt-8">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold tracking-tight text-slate-100">
+              Weekly RSI Oversold Stocks
+            </h2>
+            <p className="text-sm text-slate-400">
+              S&amp;P 500 stocks where the 14-period weekly RSI is below{" "}
+              <span className="font-medium text-emerald-300">{oversoldData.rsiThreshold}</span>{" "}
+              — potential buying opportunities as selling pressure may be exhausted.
+            </p>
+          </div>
+          <OversoldTable
+            title="Weekly RSI Below 30"
+            subtitle="Stocks with extreme weekly oversold conditions — sorted by most oversold first."
+            rows={oversoldData.stocks}
+          />
+        </section>
+      ) : oversoldLoading ? (
+        <div className="mt-8 text-sm text-slate-400">Loading weekly RSI scan...</div>
+      ) : null}
+
       {data ? (
         <>
           {search.trim() ? (
@@ -388,7 +445,7 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="lg:col-span-1">
-              <SectorSummary rows={data.sectorSummary} />
+              <SectorSummary rows={data.sectorSummary} allStocks={allRows} />
             </div>
           </section>
 

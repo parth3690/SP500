@@ -64,10 +64,36 @@ export type CrossoversResponse = {
   };
 };
 
+export type OversoldRow = {
+  ticker: string;
+  companyName: string;
+  sector: string;
+  currentPrice: number;
+  priceDate: string;
+  weeklyRSI: number;
+  dailyRSI: number | null;
+};
+
+export type OversoldResponse = {
+  asOf: string;
+  rsiThreshold: number;
+  stocks: OversoldRow[];
+  meta: {
+    total: number;
+    computed: number;
+    skipped: number;
+    oversoldCount: number;
+    rsiThreshold: number;
+    computedAt: string;
+  };
+};
+
 export type ResearchData = {
   ticker: string;
   companyName: string;
   sector: string;
+  dateRangeStart: string;
+  dateRangeEnd: string;
   currentPrice: number;
   previousClose: number;
   change: number;

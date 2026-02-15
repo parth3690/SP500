@@ -65,3 +65,20 @@ class CrossoversResponse(BaseModel):
     nearDeathCross: list[CrossoverRow]
     meta: dict[str, Any]
 
+
+class OversoldRow(BaseModel):
+    ticker: str
+    companyName: str
+    sector: str
+    currentPrice: float
+    priceDate: date
+    weeklyRSI: float = Field(..., description="14-period weekly RSI value")
+    dailyRSI: Optional[float] = Field(None, description="14-period daily RSI for reference")
+
+
+class OversoldResponse(BaseModel):
+    asOf: datetime
+    rsiThreshold: float
+    stocks: list[OversoldRow]
+    meta: dict[str, Any]
+

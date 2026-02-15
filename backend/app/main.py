@@ -14,11 +14,13 @@ from dotenv import load_dotenv
 from .models import (
     Constituent, MoversResponse, MoverRow, SectorSummaryRow,
     CrossoverRow, CrossoversResponse,
+    OversoldRow, OversoldResponse,
 )
-from .services.cache import MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, cache_get, cache_set
+from .services.cache import MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE, cache_get, cache_set
 from .services.movers import compute_movers
 from .services.crossovers import compute_crossovers
 from .services.research import compute_research
+from .services.rsi_scan import compute_rsi_scan
 from .services.prices import fetch_close_prices
 from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
 
@@ -169,16 +171,70 @@ async def crossovers(
     )
 
 
+@app.get("/api/rsi-oversold", response_model=OversoldResponse)
+async def rsi_oversold(
+    threshold: float = Query(30.0, ge=1.0, le=50.0, description="Weekly RSI threshold (stocks at or below this are returned)"),
+    refresh: bool = Query(False),
+) -> OversoldResponse:
+    """
+    Returns S&P 500 stocks where the weekly (14-period) RSI is at or below
+    the given threshold, highlighting oversold conditions.
+    """
+    cache_key = f"rsi_oversold_{threshold}"
+
+    cached = None if refresh else cache_get(RSI_SCAN_CACHE, cache_key)
+    if cached is None:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+
+        # Need ~1 year of daily data to compute weekly RSI (14 weekly periods)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
+
+        close_prices = await run_in_threadpool(fetch_close_prices, yahoo_tickers, start_date, end_date)
+        rows, meta = await run_in_threadpool(
+            compute_rsi_scan, constituents_list, close_prices, rsi_threshold=threshold
+        )
+
+        cached = {
+            "rows": rows,
+            "meta": meta,
+            "asOf": datetime.now(timezone.utc),
+        }
+        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+
+    return OversoldResponse(
+        asOf=cached["asOf"],
+        rsiThreshold=threshold,
+        stocks=[OversoldRow(**r) for r in cached["rows"]],
+        meta=cached["meta"],
+    )
+
+
 @app.get("/api/research/{ticker}")
 async def research(
     ticker: str,
+    start: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Defaults to 365 days ago."),
+    end: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Defaults to today."),
     refresh: bool = Query(False),
 ) -> dict:
     """
     Deep research for a single ticker: OHLCV, indicators, strategies.
+    Accepts optional start/end date range for custom analysis periods.
     """
     ticker_upper = ticker.strip().upper()
-    cache_key = f"research_{ticker_upper}"
+
+    end_date = end or date.today()
+    start_date = start or (end_date - timedelta(days=365))
+
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="start must be on or before end")
+    if (end_date - start_date).days > 3650:
+        raise HTTPException(status_code=400, detail="date range cannot exceed 10 years")
+    if (end_date - start_date).days < 30:
+        raise HTTPException(status_code=400, detail="date range must be at least 30 days")
+
+    cache_key = f"research_{ticker_upper}_{start_date.isoformat()}_{end_date.isoformat()}"
 
     cached = None if refresh else cache_get(RESEARCH_CACHE, cache_key)
     if cached is not None:
@@ -199,7 +255,10 @@ async def research(
             break
 
     try:
-        result = await run_in_threadpool(compute_research, yahoo_ticker, company_name, sector)
+        result = await run_in_threadpool(
+            compute_research, yahoo_ticker, company_name, sector,
+            start_date=start_date, end_date=end_date,
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

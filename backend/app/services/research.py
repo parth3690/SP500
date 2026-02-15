@@ -10,19 +10,34 @@ import pandas as pd
 # ── Data Fetching ──────────────────────────────────────────────────────────
 
 
-def fetch_single_ticker_ohlcv(yahoo_ticker: str, days: int = 365) -> pd.DataFrame:
-    """Fetch daily OHLCV data for a single ticker via yfinance."""
+def fetch_single_ticker_ohlcv(
+    yahoo_ticker: str,
+    display_start: Optional[date] = None,
+    display_end: Optional[date] = None,
+    days: int = 365,
+) -> pd.DataFrame:
+    """Fetch daily OHLCV data for a single ticker via yfinance.
+
+    If display_start/display_end are provided they define the display window;
+    extra 250 calendar days are fetched before display_start so that the
+    200-DMA has valid values for the whole display range.
+    """
     import yfinance as yf
 
-    end_date = date.today() + timedelta(days=1)
+    if display_end is None:
+        display_end = date.today()
+    if display_start is None:
+        display_start = display_end - timedelta(days=days)
+
+    fetch_end = display_end + timedelta(days=1)
     # Extra 250 calendar days so 200-DMA has valid values in the display range
-    start_date = end_date - timedelta(days=days + 250)
+    fetch_start = display_start - timedelta(days=250)
 
     try:
         df = yf.download(
             tickers=yahoo_ticker,
-            start=start_date.isoformat(),
-            end=end_date.isoformat(),
+            start=fetch_start.isoformat(),
+            end=fetch_end.isoformat(),
             interval="1d",
             auto_adjust=False,
             progress=False,
@@ -870,13 +885,20 @@ def compute_research(
     yahoo_ticker: str,
     company_name: str,
     sector: str,
-    days: int = 365,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ) -> dict[str, Any]:
     """
     Fetch OHLCV data and compute comprehensive technical analysis
-    for a single ticker.
+    for a single ticker.  Accepts optional start_date / end_date to
+    define the display window (defaults to last 365 days).
     """
-    df = fetch_single_ticker_ohlcv(yahoo_ticker, days)
+    if end_date is None:
+        end_date = date.today()
+    if start_date is None:
+        start_date = end_date - timedelta(days=365)
+
+    df = fetch_single_ticker_ohlcv(yahoo_ticker, display_start=start_date, display_end=end_date)
 
     close = df["Close"].tolist()
     open_ = df["Open"].tolist()
@@ -893,10 +915,9 @@ def compute_research(
     bollinger = compute_bollinger(close)
 
     # ── Trim to display range ─────────────────────────────────────────────
-    display_start = date.today() - timedelta(days=days)
     display_idx = 0
     for i, d in enumerate(all_dates):
-        if d >= display_start.isoformat():
+        if d >= start_date.isoformat():
             display_idx = i
             break
 
@@ -971,6 +992,8 @@ def compute_research(
         "ticker": yahoo_ticker.replace("-", "."),
         "companyName": company_name,
         "sector": sector,
+        "dateRangeStart": start_date.isoformat(),
+        "dateRangeEnd": end_date.isoformat(),
         "currentPrice": round(current_price, 2),
         "previousClose": round(prev_close, 2),
         "change": round(change, 2),

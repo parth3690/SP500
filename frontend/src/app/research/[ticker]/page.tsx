@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Script from "next/script";
 import clsx from "clsx";
@@ -52,6 +52,27 @@ const PLOTLY_DARK = {
   yaxis: { gridcolor: "rgba(255,255,255,0.04)", zeroline: false },
 };
 
+// ── Date helpers ─────────────────────────────────────────────────────────
+
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return toISODate(d);
+}
+
+const DATE_PRESETS: { label: string; days: number }[] = [
+  { label: "1M", days: 30 },
+  { label: "3M", days: 90 },
+  { label: "6M", days: 180 },
+  { label: "1Y", days: 365 },
+  { label: "2Y", days: 730 },
+  { label: "5Y", days: 1825 },
+];
+
 // ── Main Component ───────────────────────────────────────────────────────
 
 export default function ResearchPage() {
@@ -63,18 +84,70 @@ export default function ResearchPage() {
   const [error, setError] = useState<string | null>(null);
   const [plotlyReady, setPlotlyReady] = useState(false);
 
+  // Date range state
+  const [startDate, setStartDate] = useState(() => daysAgo(365));
+  const [endDate, setEndDate] = useState(() => toISODate(new Date()));
+  const [activePreset, setActivePreset] = useState<number | null>(365);
+
+  // Search state
+  const router = useRouter();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  // Close search dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setSearchOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const mainChartRef = useRef<HTMLDivElement>(null);
   const rsiChartRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<HTMLDivElement>(null);
 
-  // Fetch research data
+  // ── Data fetcher ────────────────────────────────────────────────────────
+  const loadData = useCallback(
+    (start: string, end: string, refresh?: boolean) => {
+      setLoading(true);
+      setError(null);
+      fetchResearch(ticker, { start, end, refresh })
+        .then((res) => {
+          setData(res);
+          // Sync actual returned range back into state
+          if (res.dateRangeStart) setStartDate(res.dateRangeStart);
+          if (res.dateRangeEnd) setEndDate(res.dateRangeEnd);
+        })
+        .catch((e) => setError(e instanceof Error ? e.message : "Failed to load data"))
+        .finally(() => setLoading(false));
+    },
+    [ticker]
+  );
+
+  // Search submit handler (defined after loadData)
+  const handleSearchSubmit = useCallback(
+    (q?: string) => {
+      const t = (q ?? searchQuery).trim().toUpperCase();
+      if (!t) return;
+      setSearchQuery("");
+      setSearchOpen(false);
+      if (t !== ticker) {
+        router.push(`/research/${encodeURIComponent(t)}`);
+      } else {
+        loadData(startDate, endDate, true);
+      }
+    },
+    [searchQuery, ticker, startDate, endDate, router, loadData]
+  );
+
+  // Fetch research data on mount / ticker change
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    fetchResearch(ticker)
-      .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load data"))
-      .finally(() => setLoading(false));
+    loadData(startDate, endDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker]);
 
   // ── Chart Rendering ────────────────────────────────────────────────────
@@ -318,13 +391,24 @@ export default function ResearchPage() {
   if (loading) {
     return (
       <div className="mx-auto max-w-[1600px] px-4 py-8">
-        <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
-          <ArrowLeftIcon /> Back to Dashboard
-        </Link>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
+            <ArrowLeftIcon /> Back to Dashboard
+          </Link>
+          <div ref={searchRef} className="relative w-full sm:w-auto">
+            <form onSubmit={(e) => { e.preventDefault(); handleSearchSubmit(); }} className="flex items-center gap-2">
+              <div className="relative flex-1 sm:w-72">
+                <SearchIcon />
+                <input type="text" value={searchQuery} placeholder="Search any ticker..." className="w-full rounded-lg border border-slate-700 bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/25 transition-colors" onChange={(e) => setSearchQuery(e.target.value)} />
+              </div>
+              <button type="submit" disabled={!searchQuery.trim()} className="rounded-lg bg-amber-500/20 border border-amber-500/30 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Analyze</button>
+            </form>
+          </div>
+        </div>
         <div className="mt-16 flex flex-col items-center justify-center gap-4">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-slate-700 border-t-amber-400" />
           <p className="text-sm text-slate-400">Loading research data for <span className="font-semibold text-slate-200">{ticker}</span>...</p>
-          <p className="text-xs text-slate-500">Fetching 365 days of historical data and computing indicators</p>
+          <p className="text-xs text-slate-500">Fetching data from {startDate} to {endDate} and computing indicators</p>
         </div>
       </div>
     );
@@ -335,22 +419,26 @@ export default function ResearchPage() {
   if (error) {
     return (
       <div className="mx-auto max-w-[1600px] px-4 py-8">
-        <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
-          <ArrowLeftIcon /> Back to Dashboard
-        </Link>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
+            <ArrowLeftIcon /> Back to Dashboard
+          </Link>
+          <div ref={searchRef} className="relative w-full sm:w-auto">
+            <form onSubmit={(e) => { e.preventDefault(); handleSearchSubmit(); }} className="flex items-center gap-2">
+              <div className="relative flex-1 sm:w-72">
+                <SearchIcon />
+                <input type="text" value={searchQuery} placeholder="Search any ticker..." className="w-full rounded-lg border border-slate-700 bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/25 transition-colors" onChange={(e) => setSearchQuery(e.target.value)} />
+              </div>
+              <button type="submit" disabled={!searchQuery.trim()} className="rounded-lg bg-amber-500/20 border border-amber-500/30 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Analyze</button>
+            </form>
+          </div>
+        </div>
         <div className="mt-16 rounded-xl border border-rose-900/60 bg-rose-950/20 p-8 text-center">
           <p className="text-lg font-semibold text-rose-300">Failed to load research for {ticker}</p>
           <p className="mt-2 text-sm text-rose-400/80">{error}</p>
           <button
             className="mt-4 rounded-md bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 transition-colors"
-            onClick={() => {
-              setLoading(true);
-              setError(null);
-              fetchResearch(ticker, true)
-                .then(setData)
-                .catch((e) => setError(e instanceof Error ? e.message : "Failed"))
-                .finally(() => setLoading(false));
-            }}
+            onClick={() => loadData(startDate, endDate, true)}
           >
             Retry
           </button>
@@ -384,10 +472,87 @@ export default function ResearchPage() {
         onLoad={() => setPlotlyReady(true)}
       />
 
-      {/* Back nav */}
-      <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
-        <ArrowLeftIcon /> Back to Dashboard
-      </Link>
+      {/* Top bar: Back nav + Search */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
+          <ArrowLeftIcon /> Back to Dashboard
+        </Link>
+
+        {/* Search any ticker */}
+        <div ref={searchRef} className="relative w-full sm:w-auto">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSearchSubmit();
+            }}
+            className="flex items-center gap-2"
+          >
+            <div className="relative flex-1 sm:w-72">
+              <SearchIcon />
+              <input
+                type="text"
+                value={searchQuery}
+                placeholder="Search any ticker (e.g. AAPL, MSFT, TSLA)..."
+                className="w-full rounded-lg border border-slate-700 bg-slate-950/60 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/25 transition-colors"
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setSearchOpen(e.target.value.trim().length > 0);
+                }}
+                onFocus={() => {
+                  if (searchQuery.trim()) setSearchOpen(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setSearchOpen(false);
+                    setSearchQuery("");
+                  }
+                }}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!searchQuery.trim()}
+              className="rounded-lg bg-amber-500/20 border border-amber-500/30 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Analyze
+            </button>
+          </form>
+
+          {/* Quick suggestions dropdown */}
+          {searchOpen && searchQuery.trim().length > 0 && (
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-lg border border-slate-700 bg-slate-900 shadow-xl shadow-black/40 sm:right-auto sm:w-72">
+              <div className="p-2">
+                <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-slate-500">
+                  Press Enter to analyze
+                </div>
+                <button
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800 transition-colors"
+                  onClick={() => handleSearchSubmit()}
+                >
+                  <span className="font-mono font-bold text-amber-400">{searchQuery.trim().toUpperCase()}</span>
+                  <span className="text-xs text-slate-400">— Deep research</span>
+                </button>
+              </div>
+              <div className="border-t border-slate-800 p-2">
+                <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-slate-500">
+                  Popular tickers
+                </div>
+                {["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM"].filter(
+                  (t) => t !== ticker && t.includes(searchQuery.trim().toUpperCase())
+                ).slice(0, 5).map((t) => (
+                  <button
+                    key={t}
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                    onClick={() => handleSearchSubmit(t)}
+                  >
+                    <span className="font-mono font-semibold text-slate-200">{t}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* ── Header ── */}
       <header className="mt-5 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
@@ -404,6 +569,96 @@ export default function ResearchPage() {
           </span>
         </div>
       </header>
+
+      {/* ── Date Range Picker ── */}
+      <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          {/* Preset buttons */}
+          <div className="flex items-center gap-1.5">
+            <span className="mr-1.5 text-xs font-medium uppercase tracking-wider text-slate-500">Range</span>
+            {DATE_PRESETS.map((p) => (
+              <button
+                key={p.days}
+                className={clsx(
+                  "rounded-md px-2.5 py-1 text-xs font-semibold transition-colors",
+                  activePreset === p.days
+                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                    : "bg-slate-800/60 text-slate-400 border border-slate-700/50 hover:bg-slate-700/60 hover:text-slate-200"
+                )}
+                onClick={() => {
+                  const newStart = daysAgo(p.days);
+                  const newEnd = toISODate(new Date());
+                  setStartDate(newStart);
+                  setEndDate(newEnd);
+                  setActivePreset(p.days);
+                  loadData(newStart, newEnd);
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Custom date inputs */}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500">From</label>
+            <input
+              type="date"
+              value={startDate}
+              max={endDate}
+              className="rounded-md border border-slate-700 bg-slate-950/60 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/25 transition-colors [color-scheme:dark]"
+              onChange={(e) => {
+                setStartDate(e.target.value);
+                setActivePreset(null);
+              }}
+            />
+            <label className="text-xs text-slate-500">To</label>
+            <input
+              type="date"
+              value={endDate}
+              min={startDate}
+              max={toISODate(new Date())}
+              className="rounded-md border border-slate-700 bg-slate-950/60 px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/25 transition-colors [color-scheme:dark]"
+              onChange={(e) => {
+                setEndDate(e.target.value);
+                setActivePreset(null);
+              }}
+            />
+            <button
+              className="ml-1 rounded-md bg-amber-500/20 border border-amber-500/30 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/30 transition-colors disabled:opacity-40"
+              disabled={loading}
+              onClick={() => loadData(startDate, endDate)}
+            >
+              {loading ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border border-amber-400/40 border-t-amber-400" />
+                  Loading...
+                </span>
+              ) : (
+                "Apply"
+              )}
+            </button>
+            <button
+              className="rounded-md bg-slate-800/60 border border-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 transition-colors disabled:opacity-40"
+              disabled={loading}
+              onClick={() => loadData(startDate, endDate, true)}
+              title="Refresh data (bypass cache)"
+            >
+              <RefreshIcon />
+            </button>
+          </div>
+        </div>
+
+        {/* Date range summary */}
+        {data && (
+          <div className="mt-2.5 flex items-center gap-2 text-[11px] text-slate-500">
+            <CalendarIcon />
+            <span>Showing data from <span className="text-slate-300">{data.dateRangeStart}</span> to <span className="text-slate-300">{data.dateRangeEnd}</span></span>
+            <span className="text-slate-600">·</span>
+            <span>{data.ohlcv.dates.length} trading days</span>
+          </div>
+        )}
+      </div>
 
       {/* ── Stats Bar ── */}
       <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">
@@ -539,10 +794,34 @@ export default function ResearchPage() {
 
 // ── Sub-Components ───────────────────────────────────────────────────────
 
+function SearchIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500 pointer-events-none">
+      <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
 function ArrowLeftIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
       <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H4.28a.75.75 0 00-.75.75v3.955a.75.75 0 001.5 0v-2.134l.246.245A7 7 0 0016.732 11.5a.75.75 0 10-1.42-.076zm-10.624-2.85A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h3.955a.75.75 0 00.75-.75V3.214a.75.75 0 10-1.5 0v2.134l-.246-.245A7 7 0 003.268 8.5a.75.75 0 001.42.074z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path fillRule="evenodd" d="M5.75 2a.75.75 0 01.75.75V4h7V2.75a.75.75 0 011.5 0V4h.25A2.75 2.75 0 0118 6.75v8.5A2.75 2.75 0 0115.25 18H4.75A2.75 2.75 0 012 15.25v-8.5A2.75 2.75 0 014.75 4H5V2.75A.75.75 0 015.75 2zm-1 5.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h10.5c.69 0 1.25-.56 1.25-1.25v-6.5c0-.69-.56-1.25-1.25-1.25H4.75z" clipRule="evenodd" />
     </svg>
   );
 }
