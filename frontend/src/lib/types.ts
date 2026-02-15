@@ -130,6 +130,7 @@ export type ResearchData = {
     description: string;
     signal: "BUY" | "SELL" | "NEUTRAL";
     confidence: number;
+    reasoning: string;
     metrics: Record<string, string>;
   }[];
 };
