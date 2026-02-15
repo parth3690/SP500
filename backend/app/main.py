@@ -11,11 +11,16 @@ from starlette.concurrency import run_in_threadpool
 
 from dotenv import load_dotenv
 
-from .models import Constituent, MoversResponse, MoverRow, SectorSummaryRow
-from .services.cache import MOVERS_CACHE, cache_get, cache_set
+from .models import (
+    Constituent, MoversResponse, MoverRow, SectorSummaryRow,
+    CrossoverRow, CrossoversResponse,
+)
+from .services.cache import MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, cache_get, cache_set
 from .services.movers import compute_movers
+from .services.crossovers import compute_crossovers
+from .services.research import compute_research
 from .services.prices import fetch_close_prices
-from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers
+from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
 
 load_dotenv()
 
@@ -117,6 +122,89 @@ async def movers(
         meta=cached["meta"],
         all=[MoverRow(**r) for r in all_rows] if all_rows is not None else None,
     )
+
+
+@app.get("/api/crossovers", response_model=CrossoversResponse)
+async def crossovers(
+    threshold: float = Query(2.0, ge=0.1, le=10.0, description="Max gap (%) between 50-DMA and 200-DMA"),
+    refresh: bool = Query(False),
+) -> CrossoversResponse:
+    """
+    Returns stocks where the 50-DMA and 200-DMA are within `threshold`%
+    of each other, signalling a potential golden cross or death cross.
+    """
+    cache_key = f"crossovers_{threshold}"
+
+    cached = None if refresh else cache_get(CROSSOVERS_CACHE, cache_key)
+    if cached is None:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+
+        # Need ~300 calendar days to ensure 200 trading days of data
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
+
+        close_prices = await run_in_threadpool(fetch_close_prices, yahoo_tickers, start_date, end_date)
+        rows, meta = await run_in_threadpool(
+            compute_crossovers, constituents_list, close_prices, threshold_pct=threshold
+        )
+
+        cached = {
+            "rows": rows,
+            "meta": meta,
+            "asOf": datetime.now(timezone.utc),
+        }
+        cache_set(CROSSOVERS_CACHE, cache_key, cached)
+
+    rows = cached["rows"]
+    near_golden = [CrossoverRow(**r) for r in rows if r["signal"] == "near_golden_cross"]
+    near_death = [CrossoverRow(**r) for r in rows if r["signal"] == "near_death_cross"]
+
+    return CrossoversResponse(
+        asOf=cached["asOf"],
+        thresholdPct=threshold,
+        nearGoldenCross=near_golden,
+        nearDeathCross=near_death,
+        meta=cached["meta"],
+    )
+
+
+@app.get("/api/research/{ticker}")
+async def research(
+    ticker: str,
+    refresh: bool = Query(False),
+) -> dict:
+    """
+    Deep research for a single ticker: OHLCV, indicators, strategies.
+    """
+    ticker_upper = ticker.strip().upper()
+    cache_key = f"research_{ticker_upper}"
+
+    cached = None if refresh else cache_get(RESEARCH_CACHE, cache_key)
+    if cached is not None:
+        return cached
+
+    # Look up constituent for company name / sector
+    constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+
+    company_name = ticker_upper
+    sector = ""
+    yahoo_ticker = normalize_yahoo_ticker(ticker_upper)
+
+    for c in constituents_list:
+        if c.ticker.upper() == ticker_upper or c.yahooTicker.upper() == ticker_upper:
+            company_name = c.companyName
+            sector = c.sector
+            yahoo_ticker = c.yahooTicker
+            break
+
+    try:
+        result = await run_in_threadpool(compute_research, yahoo_ticker, company_name, sector)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    cache_set(RESEARCH_CACHE, cache_key, result)
+    return result
 
 
 @app.get("/api/movers.csv")

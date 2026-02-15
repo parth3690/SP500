@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import type { MoverRow } from "@/lib/types";
@@ -58,16 +59,17 @@ export default function Heatmap({ rows }: { rows: MoverRow[] }) {
 
       <div className="mt-3 grid grid-cols-6 gap-2 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12">
         {filtered.map((r) => (
-          <div
+          <Link
             key={r.ticker}
+            href={`/research/${encodeURIComponent(r.ticker)}`}
             title={`${r.ticker} · ${r.companyName} · ${r.pctChange.toFixed(2)}%`}
             className={clsx(
-              "flex h-10 items-center justify-center rounded-md border border-slate-900/60 text-[11px] font-semibold text-slate-100",
+              "flex h-10 items-center justify-center rounded-md border border-slate-900/60 text-[11px] font-semibold text-slate-100 hover:ring-1 hover:ring-slate-500 transition-all",
               colorForPct(r.pctChange)
             )}
           >
             {r.ticker}
-          </div>
+          </Link>
         ))}
         {filtered.length === 0 ? (
           <div className="col-span-full rounded-md border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-400">

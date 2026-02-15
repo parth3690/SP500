@@ -1,4 +1,4 @@
-import type { MoversResponse } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, ResearchData } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -27,5 +27,35 @@ export async function fetchMovers(params: {
     throw new Error(`API error (${res.status}): ${text || res.statusText}`);
   }
   return (await res.json()) as MoversResponse;
+}
+
+export async function fetchCrossovers(params?: {
+  threshold?: number;
+  refresh?: boolean;
+}): Promise<CrossoversResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/crossovers`);
+  if (params?.threshold != null) url.searchParams.set("threshold", String(params.threshold));
+  if (params?.refresh) url.searchParams.set("refresh", "true");
+
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+  }
+  return (await res.json()) as CrossoversResponse;
+}
+
+export async function fetchResearch(ticker: string, refresh?: boolean): Promise<ResearchData> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/research/${encodeURIComponent(ticker)}`);
+  if (refresh) url.searchParams.set("refresh", "true");
+
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+  }
+  return (await res.json()) as ResearchData;
 }
 

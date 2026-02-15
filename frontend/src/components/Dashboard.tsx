@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 
-import { fetchMovers, apiBaseUrl } from "@/lib/api";
+import { fetchMovers, fetchCrossovers, apiBaseUrl } from "@/lib/api";
 import { addDays, toLocalISODate } from "@/lib/date";
-import type { MoversResponse, MoverRow } from "@/lib/types";
+import type { MoversResponse, MoverRow, CrossoversResponse } from "@/lib/types";
 import MoversTable from "@/components/MoversTable";
+import CrossoverTable from "@/components/CrossoverTable";
 import SectorSummary from "@/components/SectorSummary";
 import MoversBarChart from "@/components/MoversBarChart";
 import Heatmap from "@/components/Heatmap";
@@ -37,7 +38,9 @@ export default function Dashboard() {
   const [refreshEverySec, setRefreshEverySec] = useState<number>(300);
 
   const [data, setData] = useState<MoversResponse | null>(null);
+  const [crossoverData, setCrossoverData] = useState<CrossoversResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [crossoverLoading, setCrossoverLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const intervalRef = useRef<number | null>(null);
@@ -69,10 +72,29 @@ export default function Dashboard() {
     }
   };
 
+  const runCrossoverFetch = async (opts?: { refresh?: boolean }) => {
+    setCrossoverLoading(true);
+    try {
+      const payload = await fetchCrossovers({ threshold: 2.0, refresh: opts?.refresh });
+      setCrossoverData(payload);
+    } catch (e) {
+      // Crossover errors are non-critical, don't overwrite the main error
+      console.error("Crossover fetch failed:", e);
+    } finally {
+      setCrossoverLoading(false);
+    }
+  };
+
   useEffect(() => {
     void runFetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, end, limit]);
+
+  // Fetch crossover data on mount and when user triggers refresh
+  useEffect(() => {
+    void runCrossoverFetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -111,7 +133,7 @@ export default function Dashboard() {
   }, [start, end]);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8">
+    <div className="mx-auto max-w-[1600px] px-4 py-8">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -138,7 +160,10 @@ export default function Dashboard() {
           </a>
           <button
             className="rounded-md border border-slate-700 px-3 py-2 text-sm font-medium hover:bg-slate-900"
-            onClick={() => void runFetch({ refresh: true })}
+            onClick={() => {
+              void runFetch({ refresh: true });
+              void runCrossoverFetch({ refresh: true });
+            }}
           >
             Refresh now
           </button>
@@ -275,6 +300,38 @@ export default function Dashboard() {
 
       {loading && !data ? (
         <div className="mt-8 text-sm text-slate-400">Loading…</div>
+      ) : null}
+
+      {/* ─── Golden Cross / Death Cross Section ─── */}
+      {crossoverData ? (
+        <section className="mt-8">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold tracking-tight text-slate-100">
+              Moving Average Crossover Signals
+            </h2>
+            <p className="text-sm text-slate-400">
+              Stocks where the 50-DMA and 200-DMA are within{" "}
+              <span className="font-medium text-slate-200">{crossoverData.thresholdPct}%</span> of
+              each other — potential crossover incoming.
+            </p>
+          </div>
+          <div className="space-y-4">
+            <CrossoverTable
+              title="Near Golden Cross"
+              subtitle="50-DMA approaching 200-DMA from below — bullish signal."
+              rows={crossoverData.nearGoldenCross}
+              variant="golden"
+            />
+            <CrossoverTable
+              title="Near Death Cross"
+              subtitle="50-DMA approaching 200-DMA from above — bearish signal."
+              rows={crossoverData.nearDeathCross}
+              variant="death"
+            />
+          </div>
+        </section>
+      ) : crossoverLoading ? (
+        <div className="mt-8 text-sm text-slate-400">Loading crossover signals…</div>
       ) : null}
 
       {data ? (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import clsx from "clsx";
 
 import type { MoverRow } from "@/lib/types";
@@ -93,7 +94,14 @@ export default function MoversTable(props: {
             {sorted.map((r) => (
               <tr key={`${r.ticker}-${r.rank}`} className="border-b border-slate-900/60 hover:bg-slate-950/30">
                 <td className="px-3 py-2 text-sm text-slate-300">{r.rank}</td>
-                <td className="px-3 py-2 text-sm font-semibold text-slate-100">{r.ticker}</td>
+                <td className="px-3 py-2 text-sm font-semibold">
+                  <Link
+                    href={`/research/${encodeURIComponent(r.ticker)}`}
+                    className="text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200 transition-colors"
+                  >
+                    {r.ticker}
+                  </Link>
+                </td>
                 <td className="px-3 py-2 text-sm text-slate-200">{r.companyName}</td>
                 <td className="px-3 py-2 text-sm text-slate-300">{r.sector}</td>
                 <td className="px-3 py-2 text-right text-sm text-slate-200 tabular-nums">

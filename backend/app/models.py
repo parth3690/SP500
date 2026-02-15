@@ -45,3 +45,23 @@ class MoversResponse(BaseModel):
     meta: dict[str, Any]
     all: Optional[list[MoverRow]] = None
 
+
+class CrossoverRow(BaseModel):
+    ticker: str
+    companyName: str
+    sector: str
+    currentPrice: float
+    priceDate: date
+    dma50: float
+    dma200: float
+    gapPct: float = Field(..., description="Gap between 50-DMA and 200-DMA as % of 200-DMA. Negative = 50-DMA below 200-DMA.")
+    signal: str = Field(..., description="'near_golden_cross' or 'near_death_cross'")
+
+
+class CrossoversResponse(BaseModel):
+    asOf: datetime
+    thresholdPct: float
+    nearGoldenCross: list[CrossoverRow]
+    nearDeathCross: list[CrossoverRow]
+    meta: dict[str, Any]
+
