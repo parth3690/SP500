@@ -50,14 +50,30 @@ def fetch_single_ticker_ohlcv(
 
     # Handle MultiIndex columns from yfinance
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        # Try level 0 first (metric names like Close, Open, etc.)
+        level0 = df.columns.get_level_values(0).tolist()
+        if "Close" in level0:
+            df.columns = level0
+        else:
+            # Metric names are in level 1
+            df.columns = df.columns.get_level_values(1).tolist()
+
+    # De-duplicate columns (keep first occurrence)
+    df = df.loc[:, ~df.columns.duplicated()]
 
     required = ["Open", "High", "Low", "Close", "Volume"]
     for col in required:
         if col not in df.columns:
             raise ValueError(f"Missing {col} column for {yahoo_ticker}")
 
-    return df[required].dropna(subset=["Close"]).sort_index()
+    result = df[required].dropna(subset=["Close"]).sort_index()
+
+    # Ensure each column is a Series, not a DataFrame
+    for col in required:
+        if isinstance(result[col], pd.DataFrame):
+            result[col] = result[col].iloc[:, 0]
+
+    return result
 
 
 def fetch_ticker_info(yahoo_ticker: str) -> dict[str, Any]:
@@ -893,12 +909,20 @@ def compute_research(
     for a single ticker.  Accepts optional start_date / end_date to
     define the display window (defaults to last 365 days).
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     if end_date is None:
         end_date = date.today()
     if start_date is None:
         start_date = end_date - timedelta(days=365)
 
-    df = fetch_single_ticker_ohlcv(yahoo_ticker, display_start=start_date, display_end=end_date)
+    # Fetch OHLCV and fundamentals in parallel
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ohlcv_future = pool.submit(fetch_single_ticker_ohlcv, yahoo_ticker, start_date, end_date)
+        info_future = pool.submit(fetch_ticker_info, yahoo_ticker)
+
+        df = ohlcv_future.result()
+        fundamentals_early = info_future.result()
 
     close = df["Close"].tolist()
     open_ = df["Open"].tolist()
@@ -984,8 +1008,8 @@ def compute_research(
         strategy_ml_alpha(close, volume),
     ]
 
-    # ── Fundamental data (best-effort) ────────────────────────────────────
-    fundamentals = fetch_ticker_info(yahoo_ticker)
+    # ── Fundamental data (fetched in parallel above) ─────────────────────
+    fundamentals = fundamentals_early
 
     # ── Build response ────────────────────────────────────────────────────
     return {

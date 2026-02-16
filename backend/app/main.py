@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 import os
 from typing import Any, Optional
@@ -16,7 +17,11 @@ from .models import (
     CrossoverRow, CrossoversResponse,
     OversoldRow, OversoldResponse,
 )
-from .services.cache import MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE, cache_get, cache_set
+from .services.cache import (
+    MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
+    PRICE_DATA_CACHE,
+    cache_get, cache_set,
+)
 from .services.movers import compute_movers
 from .services.crossovers import compute_crossovers
 from .services.research import compute_research
@@ -47,6 +52,98 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Shared price data helper ─────────────────────────────────────────────
+
+
+def _get_shared_price_data(
+    yahoo_tickers: list[str],
+    start: date,
+    end: date,
+    *,
+    refresh: bool = False,
+) -> Any:
+    """
+    Fetch (or reuse cached) close prices for all S&P 500 tickers.
+    This avoids redundant Yahoo Finance downloads across endpoints.
+    """
+    cache_key = f"prices_{start.isoformat()}_{end.isoformat()}"
+    if not refresh:
+        cached = cache_get(PRICE_DATA_CACHE, cache_key)
+        if cached is not None:
+            return cached
+
+    prices = fetch_close_prices(yahoo_tickers, start, end)
+    cache_set(PRICE_DATA_CACHE, cache_key, prices)
+    return prices
+
+
+# ── Background preload on startup ─────────────────────────────────────────
+
+
+async def _preload_dashboard_data() -> None:
+    """Preload constituents and price data in background so first request is fast."""
+    try:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
+
+        # Single download for all dashboard endpoints
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date
+        )
+
+        # Pre-compute movers (default 30-day range)
+        movers_start = end_date - timedelta(days=DEFAULT_RANGE_DAYS)
+        movers_key = (movers_start.isoformat(), end_date.isoformat())
+        if cache_get(MOVERS_CACHE, movers_key) is None:
+            rows, sector_summary, meta = await run_in_threadpool(
+                compute_movers, constituents_list, close_prices, movers_start, end_date
+            )
+            cache_set(MOVERS_CACHE, movers_key, {
+                "rows": rows,
+                "sectorSummary": sector_summary,
+                "meta": meta,
+                "asOf": datetime.now(timezone.utc),
+            })
+
+        # Pre-compute crossovers
+        crossover_key = "crossovers_2.0"
+        if cache_get(CROSSOVERS_CACHE, crossover_key) is None:
+            c_rows, c_meta = await run_in_threadpool(
+                compute_crossovers, constituents_list, close_prices, threshold_pct=2.0
+            )
+            cache_set(CROSSOVERS_CACHE, crossover_key, {
+                "rows": c_rows, "meta": c_meta,
+                "asOf": datetime.now(timezone.utc),
+            })
+
+        # Pre-compute RSI oversold
+        rsi_key = "rsi_oversold_30.0"
+        if cache_get(RSI_SCAN_CACHE, rsi_key) is None:
+            r_rows, r_meta = await run_in_threadpool(
+                compute_rsi_scan, constituents_list, close_prices, rsi_threshold=30.0
+            )
+            cache_set(RSI_SCAN_CACHE, rsi_key, {
+                "rows": r_rows, "meta": r_meta,
+                "asOf": datetime.now(timezone.utc),
+            })
+
+    except Exception as e:
+        # Non-fatal: first request will just compute on demand
+        print(f"[preload] Background preload failed (non-fatal): {e}")
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Kick off background preload so first page load is fast."""
+    asyncio.create_task(_preload_dashboard_data())
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -93,7 +190,9 @@ async def movers(
         constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
         yahoo_tickers = get_yahoo_tickers(constituents_list)
 
-        close_prices = await run_in_threadpool(fetch_close_prices, yahoo_tickers, start_date, end_date)
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
         rows, sector_summary, meta = await run_in_threadpool(
             compute_movers, constituents_list, close_prices, start_date, end_date
         )
@@ -142,11 +241,12 @@ async def crossovers(
         constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
         yahoo_tickers = get_yahoo_tickers(constituents_list)
 
-        # Need ~300 calendar days to ensure 200 trading days of data
         end_date = date.today()
         start_date = end_date - timedelta(days=365)
 
-        close_prices = await run_in_threadpool(fetch_close_prices, yahoo_tickers, start_date, end_date)
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
         rows, meta = await run_in_threadpool(
             compute_crossovers, constituents_list, close_prices, threshold_pct=threshold
         )
@@ -187,11 +287,12 @@ async def rsi_oversold(
         constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
         yahoo_tickers = get_yahoo_tickers(constituents_list)
 
-        # Need ~1 year of daily data to compute weekly RSI (14 weekly periods)
         end_date = date.today()
         start_date = end_date - timedelta(days=365)
 
-        close_prices = await run_in_threadpool(fetch_close_prices, yahoo_tickers, start_date, end_date)
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
         rows, meta = await run_in_threadpool(
             compute_rsi_scan, constituents_list, close_prices, rsi_threshold=threshold
         )

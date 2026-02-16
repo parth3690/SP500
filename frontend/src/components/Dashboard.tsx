@@ -99,17 +99,13 @@ export default function Dashboard() {
     }
   };
 
+  // Fire ALL fetches in parallel on mount for fastest initial load
   useEffect(() => {
     void runFetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [start, end, limit]);
-
-  // Fetch crossover + oversold data on mount and when user triggers refresh
-  useEffect(() => {
     void runCrossoverFetch();
     void runOversoldFetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [start, end, limit]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -333,7 +329,10 @@ export default function Dashboard() {
       ) : null}
 
       {loading && !data ? (
-        <div className="mt-8 text-sm text-slate-400">Loading…</div>
+        <div className="mt-8 flex items-center gap-3 text-sm text-slate-400">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-700 border-t-amber-400" />
+          Loading market data...
+        </div>
       ) : null}
 
       {/* ─── Golden Cross / Death Cross Section ─── */}
@@ -365,7 +364,10 @@ export default function Dashboard() {
           </div>
         </section>
       ) : crossoverLoading ? (
-        <div className="mt-8 text-sm text-slate-400">Loading crossover signals…</div>
+        <div className="mt-8 flex items-center gap-3 text-sm text-slate-400">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-700 border-t-amber-400" />
+          Computing crossover signals...
+        </div>
       ) : null}
 
       {/* ─── Weekly RSI Oversold Section ─── */}
@@ -388,7 +390,10 @@ export default function Dashboard() {
           />
         </section>
       ) : oversoldLoading ? (
-        <div className="mt-8 text-sm text-slate-400">Loading weekly RSI scan...</div>
+        <div className="mt-8 flex items-center gap-3 text-sm text-slate-400">
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-700 border-t-emerald-400" />
+          Scanning weekly RSI...
+        </div>
       ) : null}
 
       {data ? (

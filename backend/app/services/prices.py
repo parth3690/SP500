@@ -40,7 +40,7 @@ def fetch_close_prices(
     start: date,
     end: date,
     *,
-    chunk_size: int = 120,
+    chunk_size: int = 400,
 ) -> pd.DataFrame:
     """
     Fetch daily close prices for many tickers via yfinance.
