@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
 
@@ -45,6 +46,7 @@ def _parse_origins() -> list[str]:
 app = FastAPI(title="S&P 500 Monthly Movers Analyzer API", version="0.1.0")
 
 origins = _parse_origins()
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

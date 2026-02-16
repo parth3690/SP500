@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from typing import Any, Optional
 
+import numpy as np
 import pandas as pd
 
 
@@ -16,12 +18,7 @@ def fetch_single_ticker_ohlcv(
     display_end: Optional[date] = None,
     days: int = 365,
 ) -> pd.DataFrame:
-    """Fetch daily OHLCV data for a single ticker via yfinance.
-
-    If display_start/display_end are provided they define the display window;
-    extra 250 calendar days are fetched before display_start so that the
-    200-DMA has valid values for the whole display range.
-    """
+    """Fetch daily OHLCV data for a single ticker via yfinance."""
     import yfinance as yf
 
     if display_end is None:
@@ -30,7 +27,6 @@ def fetch_single_ticker_ohlcv(
         display_start = display_end - timedelta(days=days)
 
     fetch_end = display_end + timedelta(days=1)
-    # Extra 250 calendar days so 200-DMA has valid values in the display range
     fetch_start = display_start - timedelta(days=250)
 
     try:
@@ -48,17 +44,13 @@ def fetch_single_ticker_ohlcv(
     if df is None or df.empty:
         raise ValueError(f"No data available for {yahoo_ticker}")
 
-    # Handle MultiIndex columns from yfinance
     if isinstance(df.columns, pd.MultiIndex):
-        # Try level 0 first (metric names like Close, Open, etc.)
         level0 = df.columns.get_level_values(0).tolist()
         if "Close" in level0:
             df.columns = level0
         else:
-            # Metric names are in level 1
             df.columns = df.columns.get_level_values(1).tolist()
 
-    # De-duplicate columns (keep first occurrence)
     df = df.loc[:, ~df.columns.duplicated()]
 
     required = ["Open", "High", "Low", "Close", "Volume"]
@@ -68,7 +60,6 @@ def fetch_single_ticker_ohlcv(
 
     result = df[required].dropna(subset=["Close"]).sort_index()
 
-    # Ensure each column is a Series, not a DataFrame
     for col in required:
         if isinstance(result[col], pd.DataFrame):
             result[col] = result[col].iloc[:, 0]
@@ -77,7 +68,7 @@ def fetch_single_ticker_ohlcv(
 
 
 def fetch_ticker_info(yahoo_ticker: str) -> dict[str, Any]:
-    """Fetch fundamental data (P/E, market cap, beta) from yfinance."""
+    """Fetch fundamental data from yfinance."""
     import yfinance as yf
 
     try:
@@ -99,111 +90,74 @@ def fetch_ticker_info(yahoo_ticker: str) -> dict[str, Any]:
 # ── Utility ────────────────────────────────────────────────────────────────
 
 
-def _clean(v: Any) -> Any:
-    """Convert NaN/Inf to None, round floats."""
-    if v is None:
-        return None
-    try:
-        if math.isnan(v) or math.isinf(v):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if isinstance(v, float):
-        return round(v, 4)
-    return v
+def _clean_series(s: pd.Series) -> list:
+    """Convert a pandas Series to a list, replacing NaN/Inf with None and rounding."""
+    arr = s.to_numpy(dtype=np.float64, na_value=np.nan)
+    out: list = [None] * len(arr)
+    for i in range(len(arr)):
+        v = arr[i]
+        if np.isfinite(v):
+            out[i] = round(float(v), 4)
+    return out
 
 
 def _clean_list(lst: list) -> list:
-    return [_clean(v) for v in lst]
+    out: list = [None] * len(lst)
+    for i, v in enumerate(lst):
+        if v is not None:
+            try:
+                if math.isfinite(v):
+                    out[i] = round(float(v), 4)
+            except (TypeError, ValueError):
+                out[i] = v
+    return out
 
 
-# ── Technical Indicators ──────────────────────────────────────────────────
+# ── Vectorized Technical Indicators (pandas/numpy) ───────────────────────
 
 
-def compute_sma(prices: list[float], period: int) -> list[Optional[float]]:
-    result: list[Optional[float]] = []
-    for i in range(len(prices)):
-        if i < period - 1:
-            result.append(None)
-        else:
-            result.append(sum(prices[i - period + 1 : i + 1]) / period)
-    return result
+def compute_sma_series(s: pd.Series, period: int) -> pd.Series:
+    return s.rolling(window=period, min_periods=period).mean()
 
 
-def compute_ema(prices: list[float], period: int) -> list[float]:
-    if not prices:
-        return []
-    k = 2.0 / (period + 1)
-    result = [prices[0]]
-    for i in range(1, len(prices)):
-        result.append(prices[i] * k + result[-1] * (1 - k))
-    return result
+def compute_ema_series(s: pd.Series, period: int) -> pd.Series:
+    return s.ewm(span=period, adjust=False).mean()
 
 
-def compute_rsi(prices: list[float], period: int = 14) -> list[Optional[float]]:
-    result: list[Optional[float]] = [None] * len(prices)
-    if len(prices) < period + 1:
-        return result
-
-    changes = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
-    gains = [max(c, 0) for c in changes]
-    losses = [max(-c, 0) for c in changes]
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    if avg_loss == 0:
-        result[period] = 100.0
-    else:
-        rs = avg_gain / avg_loss
-        result[period] = 100.0 - (100.0 / (1.0 + rs))
-
-    for i in range(period, len(changes)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        if avg_loss == 0:
-            result[i + 1] = 100.0
-        else:
-            rs = avg_gain / avg_loss
-            result[i + 1] = 100.0 - (100.0 / (1.0 + rs))
-
-    return result
+def compute_rsi_series(s: pd.Series, period: int = 14) -> pd.Series:
+    delta = s.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi.iloc[:period] = np.nan
+    return rsi
 
 
-def compute_macd(prices: list[float]) -> dict[str, list[float]]:
-    ema12 = compute_ema(prices, 12)
-    ema26 = compute_ema(prices, 26)
-    macd_line = [ema12[i] - ema26[i] for i in range(len(prices))]
-    signal_line = compute_ema(macd_line, 9)
-    histogram = [macd_line[i] - signal_line[i] for i in range(len(prices))]
-    return {
-        "macdLine": macd_line,
-        "signalLine": signal_line,
-        "histogram": histogram,
-    }
+def compute_macd_series(s: pd.Series) -> dict[str, pd.Series]:
+    ema12 = s.ewm(span=12, adjust=False).mean()
+    ema26 = s.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return {"macdLine": macd_line, "signalLine": signal_line, "histogram": histogram}
 
 
-def compute_bollinger(
-    prices: list[float], period: int = 20, num_std: float = 2.0
-) -> dict[str, list[Optional[float]]]:
-    upper: list[Optional[float]] = [None] * len(prices)
-    middle: list[Optional[float]] = [None] * len(prices)
-    lower: list[Optional[float]] = [None] * len(prices)
-
-    for i in range(period - 1, len(prices)):
-        window = prices[i - period + 1 : i + 1]
-        mean = sum(window) / period
-        std = (sum((p - mean) ** 2 for p in window) / period) ** 0.5
-        middle[i] = mean
-        upper[i] = mean + num_std * std
-        lower[i] = mean - num_std * std
-
+def compute_bollinger_series(
+    s: pd.Series, period: int = 20, num_std: float = 2.0
+) -> dict[str, pd.Series]:
+    middle = s.rolling(window=period, min_periods=period).mean()
+    std = s.rolling(window=period, min_periods=period).std(ddof=0)
+    upper = middle + num_std * std
+    lower = middle - num_std * std
     return {"upper": upper, "middle": middle, "lower": lower}
 
 
-def compute_fibonacci(prices: list[float]) -> dict[str, float]:
-    high = max(prices)
-    low = min(prices)
+def compute_fibonacci(prices: pd.Series) -> dict[str, float]:
+    high = float(prices.max())
+    low = float(prices.min())
     diff = high - low
     return {
         "high": round(high, 2),
@@ -218,29 +172,29 @@ def compute_fibonacci(prices: list[float]) -> dict[str, float]:
     }
 
 
-# ── Quantitative Strategies ───────────────────────────────────────────────
+# ── Precomputed-indicator dict type ────────────────────────────────────────
+# Strategies receive this dict so nothing is recomputed.
+# Keys:  close (pd.Series), high, low, volume (pd.Series),
+#        sma20, sma50, sma200 (pd.Series), rsi (pd.Series),
+#        macd (dict of pd.Series), bollinger (dict of pd.Series)
 
 
-def _volatility(prices: list[float], period: int = 20) -> float:
-    if len(prices) < period + 1:
+def _volatility_vec(close: pd.Series, period: int = 20) -> float:
+    ret = close.iloc[-period:].pct_change().dropna()
+    if ret.empty:
         return 0.02
-    recent = prices[-period:]
-    returns = [(recent[i] - recent[i - 1]) / recent[i - 1] for i in range(1, len(recent)) if recent[i - 1] != 0]
-    if not returns:
-        return 0.02
-    mean = sum(returns) / len(returns)
-    variance = sum((r - mean) ** 2 for r in returns) / len(returns)
-    return variance ** 0.5
+    return float(ret.std())
 
 
-def strategy_trend_following(prices: list[float], volumes: list[float]) -> dict[str, Any]:
-    sma20 = compute_sma(prices, 20)
-    sma50 = compute_sma(prices, 50)
-    macd_data = compute_macd(prices)
+def strategy_trend_following(ind: dict[str, Any]) -> dict[str, Any]:
+    close = ind["close"]
+    sma20 = ind["sma20"]
+    sma50 = ind["sma50"]
+    macd_data = ind["macd"]
 
-    current_price = prices[-1]
-    sma50_val = sma50[-1]
-    sma20_val = sma20[-1]
+    current_price = float(close.iloc[-1])
+    sma50_val = float(sma50.iloc[-1]) if pd.notna(sma50.iloc[-1]) else None
+    sma20_val = float(sma20.iloc[-1]) if pd.notna(sma20.iloc[-1]) else None
 
     if sma50_val is None or sma20_val is None:
         return {
@@ -251,7 +205,7 @@ def strategy_trend_following(prices: list[float], volumes: list[float]) -> dict[
         }
 
     trend_strength = ((current_price - sma50_val) / sma50_val) * 100.0
-    histogram = macd_data["histogram"][-1]
+    histogram = float(macd_data["histogram"].iloc[-1])
 
     signal, confidence = "NEUTRAL", 30.0
     reasoning = ""
@@ -288,23 +242,26 @@ def strategy_trend_following(prices: list[float], volumes: list[float]) -> dict[
         "reasoning": reasoning,
         "metrics": {
             "SMA 20": f"${sma20_val:.2f}", "SMA 50": f"${sma50_val:.2f}",
-            "MACD": f"{macd_data['macdLine'][-1]:.3f}",
+            "MACD": f"{float(macd_data['macdLine'].iloc[-1]):.3f}",
             "Trend Strength": f"{trend_strength:.2f}%",
         },
     }
 
 
-def strategy_multi_factor(prices: list[float], volumes: list[float]) -> dict[str, Any]:
-    current_price = prices[-1]
-    returns_30d = (current_price - prices[-30]) / prices[-30] if len(prices) >= 30 else 0.0
+def strategy_multi_factor(ind: dict[str, Any]) -> dict[str, Any]:
+    close = ind["close"]
+    volumes = ind["volume"]
+    n = len(close)
+    current_price = float(close.iloc[-1])
+    returns_30d = (current_price - float(close.iloc[-30])) / float(close.iloc[-30]) if n >= 30 else 0.0
     momentum_factor = 1 if returns_30d > 0.05 else (-1 if returns_30d < -0.05 else 0)
 
-    avg_volume = sum(volumes) / len(volumes) if volumes else 1.0
-    current_vol = volumes[-1] if volumes else 1.0
+    avg_volume = float(volumes.mean()) if len(volumes) > 0 else 1.0
+    current_vol = float(volumes.iloc[-1]) if len(volumes) > 0 else 1.0
     volume_ratio = current_vol / avg_volume if avg_volume else 1.0
     quality_factor = 1 if 0.8 < volume_ratio < 1.5 else -1
 
-    vol = _volatility(prices)
+    vol = _volatility_vec(close)
     low_vol_factor = 1 if vol < 0.02 else (-1 if vol > 0.04 else 0)
 
     composite = (momentum_factor * 2 + quality_factor + low_vol_factor) / 4.0
@@ -349,14 +306,16 @@ def strategy_multi_factor(prices: list[float], volumes: list[float]) -> dict[str
     }
 
 
-def strategy_momentum(prices: list[float]) -> dict[str, Any]:
-    current_price = prices[-1]
-    rsi_series = compute_rsi(prices)
-    rsi = rsi_series[-1] if rsi_series[-1] is not None else 50.0
+def strategy_momentum(ind: dict[str, Any]) -> dict[str, Any]:
+    close = ind["close"]
+    rsi_s = ind["rsi"]
+    n = len(close)
+    current_price = float(close.iloc[-1])
+    rsi = float(rsi_s.iloc[-1]) if pd.notna(rsi_s.iloc[-1]) else 50.0
 
-    returns_1w = (current_price - prices[-5]) / prices[-5] if len(prices) >= 5 else 0.0
-    returns_1m = (current_price - prices[-21]) / prices[-21] if len(prices) >= 21 else 0.0
-    returns_3m = (current_price - prices[-63]) / prices[-63] if len(prices) >= 63 else 0.0
+    returns_1w = (current_price - float(close.iloc[-5])) / float(close.iloc[-5]) if n >= 5 else 0.0
+    returns_1m = (current_price - float(close.iloc[-21])) / float(close.iloc[-21]) if n >= 21 else 0.0
+    returns_3m = (current_price - float(close.iloc[-63])) / float(close.iloc[-63]) if n >= 63 else 0.0
 
     rs_score = (returns_1w * 0.5 + returns_1m * 0.3 + returns_3m * 0.2) * 100.0
 
@@ -410,10 +369,11 @@ def strategy_momentum(prices: list[float]) -> dict[str, Any]:
     }
 
 
-def strategy_stat_arb(prices: list[float]) -> dict[str, Any]:
-    sma20 = compute_sma(prices, 20)
-    mean = sma20[-1]
-    current_price = prices[-1]
+def strategy_stat_arb(ind: dict[str, Any]) -> dict[str, Any]:
+    close = ind["close"]
+    sma20 = ind["sma20"]
+    mean = float(sma20.iloc[-1]) if pd.notna(sma20.iloc[-1]) else None
+    current_price = float(close.iloc[-1])
 
     if mean is None or mean == 0:
         return {
@@ -423,9 +383,8 @@ def strategy_stat_arb(prices: list[float]) -> dict[str, Any]:
             "reasoning": "Insufficient data to compute statistical bands.",
         }
 
-    recent = prices[-20:]
-    variance = sum((p - mean) ** 2 for p in recent) / 20.0
-    std_dev = variance ** 0.5
+    recent = close.iloc[-20:]
+    std_dev = float(recent.std(ddof=0))
 
     if std_dev == 0:
         return {
@@ -491,22 +450,24 @@ def strategy_stat_arb(prices: list[float]) -> dict[str, Any]:
     }
 
 
-def strategy_ml_alpha(prices: list[float], volumes: list[float]) -> dict[str, Any]:
-    rsi_series = compute_rsi(prices)
-    rsi = rsi_series[-1] if rsi_series[-1] is not None else 50.0
-    macd_data = compute_macd(prices)
-    vol = _volatility(prices)
+def strategy_ml_alpha(ind: dict[str, Any]) -> dict[str, Any]:
+    close = ind["close"]
+    volumes = ind["volume"]
+    rsi_s = ind["rsi"]
+    macd_data = ind["macd"]
+    rsi = float(rsi_s.iloc[-1]) if pd.notna(rsi_s.iloc[-1]) else 50.0
+    vol = _volatility_vec(close)
 
-    avg_vol = sum(volumes[-20:-1]) / 19.0 if len(volumes) >= 20 else (sum(volumes) / len(volumes) if volumes else 1.0)
-    current_vol = volumes[-1] if volumes else 0.0
+    avg_vol = float(volumes.iloc[-20:-1].mean()) if len(volumes) >= 20 else (float(volumes.mean()) if len(volumes) > 0 else 1.0)
+    current_vol = float(volumes.iloc[-1]) if len(volumes) > 0 else 0.0
     volume_anomaly = current_vol > avg_vol * 1.5
 
-    momentum = (prices[-1] - prices[-5]) / prices[-5] if len(prices) >= 5 else 0.0
+    momentum = (float(close.iloc[-1]) - float(close.iloc[-5])) / float(close.iloc[-5]) if len(close) >= 5 else 0.0
 
     # Feature scores
     f_mom = momentum * 0.3
     f_rsi = (1 if rsi < 30 else (-1 if rsi > 70 else 0)) * 0.25
-    f_macd = (1 if macd_data["histogram"][-1] > 0 else -1) * 0.2
+    f_macd = (1 if float(macd_data["histogram"].iloc[-1]) > 0 else -1) * 0.2
     f_vol = (1 if vol < 0.02 else (-1 if vol > 0.04 else 0)) * 0.15
     f_volano = (1 if volume_anomaly else 0) * 0.1
 
@@ -529,7 +490,7 @@ def strategy_ml_alpha(prices: list[float], volumes: list[float]) -> dict[str, An
     else:
         feature_notes.append(f"RSI ({rsi:.1f}) is neutral")
 
-    feature_notes.append(f"MACD histogram is {'positive → bullish' if macd_data['histogram'][-1] > 0 else 'negative → bearish'}")
+    feature_notes.append(f"MACD histogram is {'positive → bullish' if float(macd_data['histogram'].iloc[-1]) > 0 else 'negative → bearish'}")
 
     if vol < 0.02:
         feature_notes.append(f"low volatility ({vol*100:.2f}%) → favorable")
@@ -563,16 +524,17 @@ def strategy_ml_alpha(prices: list[float], volumes: list[float]) -> dict[str, An
 # ── New Strategies ────────────────────────────────────────────────────────
 
 
-def strategy_bollinger_squeeze(prices: list[float]) -> dict[str, Any]:
+def strategy_bollinger_squeeze(ind: dict[str, Any]) -> dict[str, Any]:
     """Detects Bollinger Band squeeze (low volatility) and breakout direction."""
-    bb = compute_bollinger(prices, 20, 2.0)
-    current_price = prices[-1]
+    bb = ind["bollinger"]
+    close = ind["close"]
+    current_price = float(close.iloc[-1])
 
-    upper = bb["upper"][-1]
-    lower = bb["lower"][-1]
-    middle = bb["middle"][-1]
+    upper_val = float(bb["upper"].iloc[-1]) if pd.notna(bb["upper"].iloc[-1]) else None
+    lower_val = float(bb["lower"].iloc[-1]) if pd.notna(bb["lower"].iloc[-1]) else None
+    middle_val = float(bb["middle"].iloc[-1]) if pd.notna(bb["middle"].iloc[-1]) else None
 
-    if upper is None or lower is None or middle is None or middle == 0:
+    if upper_val is None or lower_val is None or middle_val is None or middle_val == 0:
         return {
             "name": "Bollinger Band Squeeze", "icon": "🔄",
             "description": "Detects volatility contraction and imminent breakout direction",
@@ -580,16 +542,13 @@ def strategy_bollinger_squeeze(prices: list[float]) -> dict[str, Any]:
             "reasoning": "Insufficient data for Bollinger Band calculation.",
         }
 
+    upper = upper_val
+    lower = lower_val
+    middle = middle_val
     bandwidth = ((upper - lower) / middle) * 100.0
 
-    # Check recent bandwidth trend (narrowing = squeeze)
-    recent_bw = []
-    for i in range(-10, 0):
-        u, l, m = bb["upper"][i], bb["lower"][i], bb["middle"][i]
-        if u is not None and l is not None and m is not None and m != 0:
-            recent_bw.append(((u - l) / m) * 100.0)
-
-    avg_bw = sum(recent_bw) / len(recent_bw) if recent_bw else bandwidth
+    bw_series = ((bb["upper"] - bb["lower"]) / bb["middle"]).dropna().iloc[-10:] * 100.0
+    avg_bw = float(bw_series.mean()) if len(bw_series) > 0 else bandwidth
     is_squeeze = bandwidth < avg_bw * 0.85  # Band narrowing >15% from recent avg
 
     pct_b = (current_price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
@@ -647,28 +606,22 @@ def strategy_bollinger_squeeze(prices: list[float]) -> dict[str, Any]:
     }
 
 
-def _compute_stochastic(prices_high: list[float], prices_low: list[float], prices_close: list[float], k_period: int = 14, d_period: int = 3) -> tuple[float, float]:
-    """Compute Stochastic Oscillator %K and %D."""
-    if len(prices_close) < k_period:
+def _compute_stochastic_vec(high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3) -> tuple[float, float]:
+    """Vectorized Stochastic Oscillator %K and %D."""
+    if len(close) < k_period:
         return 50.0, 50.0
-
-    k_values = []
-    for i in range(k_period - 1, len(prices_close)):
-        h = max(prices_high[i - k_period + 1 : i + 1])
-        l = min(prices_low[i - k_period + 1 : i + 1])
-        if h == l:
-            k_values.append(50.0)
-        else:
-            k_values.append(((prices_close[i] - l) / (h - l)) * 100.0)
-
-    pct_k = k_values[-1] if k_values else 50.0
-    pct_d = sum(k_values[-d_period:]) / min(d_period, len(k_values)) if k_values else 50.0
-    return pct_k, pct_d
+    highest = high.rolling(window=k_period, min_periods=k_period).max()
+    lowest = low.rolling(window=k_period, min_periods=k_period).min()
+    denom = highest - lowest
+    pct_k_series = ((close - lowest) / denom.replace(0, np.nan)) * 100.0
+    pct_k_series = pct_k_series.fillna(50.0)
+    pct_d_series = pct_k_series.rolling(window=d_period).mean()
+    return float(pct_k_series.iloc[-1]), float(pct_d_series.iloc[-1])
 
 
-def strategy_stochastic(high: list[float], low: list[float], close: list[float]) -> dict[str, Any]:
+def strategy_stochastic(ind: dict[str, Any]) -> dict[str, Any]:
     """Stochastic Oscillator strategy — overbought/oversold with %K/%D crossovers."""
-    pct_k, pct_d = _compute_stochastic(high, low, close)
+    pct_k, pct_d = _compute_stochastic_vec(ind["high"], ind["low"], ind["close"])
 
     signal, confidence = "NEUTRAL", 40.0
     reasoning = ""
@@ -722,48 +675,38 @@ def strategy_stochastic(high: list[float], low: list[float], close: list[float])
     }
 
 
-def _compute_adx(high: list[float], low: list[float], close: list[float], period: int = 14) -> tuple[float, float, float]:
-    """Compute ADX, +DI, -DI."""
+def _compute_adx_vec(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> tuple[float, float, float]:
+    """Vectorized ADX, +DI, -DI using pandas."""
     if len(close) < period + 1:
         return 25.0, 25.0, 25.0
 
-    plus_dm_list, minus_dm_list, tr_list = [], [], []
+    h_diff = high.diff()
+    l_diff = -low.diff()
+    plus_dm = pd.Series(np.where((h_diff > l_diff) & (h_diff > 0), h_diff, 0.0), index=close.index)
+    minus_dm = pd.Series(np.where((l_diff > h_diff) & (l_diff > 0), l_diff, 0.0), index=close.index)
 
-    for i in range(1, len(close)):
-        h_diff = high[i] - high[i - 1]
-        l_diff = low[i - 1] - low[i]
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-        plus_dm = h_diff if (h_diff > l_diff and h_diff > 0) else 0
-        minus_dm = l_diff if (l_diff > h_diff and l_diff > 0) else 0
+    # Wilder's smoothing
+    alpha = 1.0 / period
+    atr = tr.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+    plus_di_smooth = plus_dm.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+    minus_di_smooth = minus_dm.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
 
-        tr = max(high[i] - low[i], abs(high[i] - close[i - 1]), abs(low[i] - close[i - 1]))
+    atr_val = float(atr.iloc[-1])
+    plus_di = (float(plus_di_smooth.iloc[-1]) / atr_val * 100) if atr_val != 0 else 0
+    minus_di = (float(minus_di_smooth.iloc[-1]) / atr_val * 100) if atr_val != 0 else 0
 
-        plus_dm_list.append(plus_dm)
-        minus_dm_list.append(minus_dm)
-        tr_list.append(tr)
-
-    # Smoothed averages (Wilder's smoothing)
-    atr = sum(tr_list[:period]) / period
-    plus_di_smooth = sum(plus_dm_list[:period]) / period
-    minus_di_smooth = sum(minus_dm_list[:period]) / period
-
-    for i in range(period, len(tr_list)):
-        atr = (atr * (period - 1) + tr_list[i]) / period
-        plus_di_smooth = (plus_di_smooth * (period - 1) + plus_dm_list[i]) / period
-        minus_di_smooth = (minus_di_smooth * (period - 1) + minus_dm_list[i]) / period
-
-    plus_di = (plus_di_smooth / atr * 100) if atr != 0 else 0
-    minus_di = (minus_di_smooth / atr * 100) if atr != 0 else 0
-
-    dx_sum = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
-    adx = dx_sum  # Simplified — in production you'd smooth DX over another period
-
-    return adx, plus_di, minus_di
+    dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
+    return dx, plus_di, minus_di
 
 
-def strategy_adx(high: list[float], low: list[float], close: list[float]) -> dict[str, Any]:
+def strategy_adx(ind: dict[str, Any]) -> dict[str, Any]:
     """ADX Trend Strength — measures how strong the current trend is."""
-    adx, plus_di, minus_di = _compute_adx(high, low, close)
+    adx, plus_di, minus_di = _compute_adx_vec(ind["high"], ind["low"], ind["close"])
 
     signal, confidence = "NEUTRAL", 40.0
     reasoning = ""
@@ -812,8 +755,12 @@ def strategy_adx(high: list[float], low: list[float], close: list[float]) -> dic
     }
 
 
-def strategy_obv(close: list[float], volumes: list[float]) -> dict[str, Any]:
+def strategy_obv(ind: dict[str, Any]) -> dict[str, Any]:
     """On-Balance Volume — confirms price trends via volume flow."""
+    close = ind["close"]
+    volumes = ind["volume"]
+    sma20 = ind["sma20"]
+
     if len(close) < 21 or len(volumes) < 21:
         return {
             "name": "OBV Volume Trend", "icon": "📊",
@@ -822,27 +769,18 @@ def strategy_obv(close: list[float], volumes: list[float]) -> dict[str, Any]:
             "reasoning": "Insufficient data for OBV calculation.",
         }
 
-    # Calculate OBV
-    obv = [0.0]
-    for i in range(1, len(close)):
-        if close[i] > close[i - 1]:
-            obv.append(obv[-1] + volumes[i])
-        elif close[i] < close[i - 1]:
-            obv.append(obv[-1] - volumes[i])
-        else:
-            obv.append(obv[-1])
+    # Vectorized OBV
+    direction = np.sign(close.diff()).fillna(0)
+    obv_series = (direction * volumes).cumsum()
 
-    # OBV trend (20-day SMA of OBV)
-    obv_sma = compute_sma(obv, 20)
-    current_obv = obv[-1]
-    obv_sma_val = obv_sma[-1]
+    obv_sma_s = obv_series.rolling(window=20, min_periods=20).mean()
+    current_obv = float(obv_series.iloc[-1])
+    obv_sma_val = float(obv_sma_s.iloc[-1]) if pd.notna(obv_sma_s.iloc[-1]) else None
 
-    # Price trend
-    price_sma20 = compute_sma(close, 20)
-    price_above_sma = close[-1] > (price_sma20[-1] or close[-1])
+    sma20_val = float(sma20.iloc[-1]) if pd.notna(sma20.iloc[-1]) else float(close.iloc[-1])
+    price_above_sma = float(close.iloc[-1]) > sma20_val
 
-    # OBV direction over last 10 days
-    obv_10d_change = obv[-1] - obv[-10] if len(obv) >= 10 else 0
+    obv_10d_change = float(obv_series.iloc[-1] - obv_series.iloc[-10]) if len(obv_series) >= 10 else 0
     obv_rising = obv_10d_change > 0
 
     signal, confidence = "NEUTRAL", 40.0
@@ -906,11 +844,9 @@ def compute_research(
 ) -> dict[str, Any]:
     """
     Fetch OHLCV data and compute comprehensive technical analysis
-    for a single ticker.  Accepts optional start_date / end_date to
-    define the display window (defaults to last 365 days).
+    for a single ticker.  All indicators are computed once (vectorized)
+    and shared across strategies — zero redundant computation.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     if end_date is None:
         end_date = date.today()
     if start_date is None:
@@ -920,69 +856,65 @@ def compute_research(
     with ThreadPoolExecutor(max_workers=2) as pool:
         ohlcv_future = pool.submit(fetch_single_ticker_ohlcv, yahoo_ticker, start_date, end_date)
         info_future = pool.submit(fetch_ticker_info, yahoo_ticker)
-
         df = ohlcv_future.result()
-        fundamentals_early = info_future.result()
+        fundamentals = info_future.result()
 
-    close = df["Close"].tolist()
-    open_ = df["Open"].tolist()
-    high = df["High"].tolist()
-    low = df["Low"].tolist()
-    volume = df["Volume"].tolist()
-    all_dates = [d.strftime("%Y-%m-%d") for d in df.index]
+    close = df["Close"]
+    open_ = df["Open"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
 
-    # ── Compute indicators on full dataset ────────────────────────────────
-    sma50 = compute_sma(close, 50)
-    sma200 = compute_sma(close, 200)
-    rsi_series = compute_rsi(close)
-    macd_data = compute_macd(close)
-    bollinger = compute_bollinger(close)
+    # ── Compute ALL indicators ONCE (vectorized) ──────────────────────────
+    sma20 = compute_sma_series(close, 20)
+    sma50 = compute_sma_series(close, 50)
+    sma200 = compute_sma_series(close, 200)
+    rsi = compute_rsi_series(close)
+    macd = compute_macd_series(close)
+    bollinger = compute_bollinger_series(close)
+
+    # ── Shared indicator dict for all strategies ──────────────────────────
+    ind = {
+        "close": close, "high": high, "low": low, "volume": volume,
+        "sma20": sma20, "sma50": sma50, "sma200": sma200,
+        "rsi": rsi, "macd": macd, "bollinger": bollinger,
+    }
 
     # ── Trim to display range ─────────────────────────────────────────────
-    display_idx = 0
-    for i, d in enumerate(all_dates):
-        if d >= start_date.isoformat():
-            display_idx = i
-            break
+    start_str = start_date.isoformat()
+    mask = df.index >= pd.Timestamp(start_str)
+    d = df.loc[mask]
+    dates = [ts.strftime("%Y-%m-%d") for ts in d.index]
 
-    dates = all_dates[display_idx:]
-    d_close = close[display_idx:]
-    d_open = open_[display_idx:]
-    d_high = high[display_idx:]
-    d_low = low[display_idx:]
-    d_volume = volume[display_idx:]
-    d_sma50 = sma50[display_idx:]
-    d_sma200 = sma200[display_idx:]
-    d_rsi = rsi_series[display_idx:]
-    d_macd_line = macd_data["macdLine"][display_idx:]
-    d_signal_line = macd_data["signalLine"][display_idx:]
-    d_histogram = macd_data["histogram"][display_idx:]
-    d_bb_upper = bollinger["upper"][display_idx:]
-    d_bb_middle = bollinger["middle"][display_idx:]
-    d_bb_lower = bollinger["lower"][display_idx:]
+    d_sma50 = sma50.loc[mask]
+    d_sma200 = sma200.loc[mask]
+    d_rsi = rsi.loc[mask]
+    d_macd_line = macd["macdLine"].loc[mask]
+    d_signal_line = macd["signalLine"].loc[mask]
+    d_histogram = macd["histogram"].loc[mask]
+    d_bb_upper = bollinger["upper"].loc[mask]
+    d_bb_middle = bollinger["middle"].loc[mask]
+    d_bb_lower = bollinger["lower"].loc[mask]
 
     # ── Fibonacci on display range ────────────────────────────────────────
-    fibonacci = compute_fibonacci(d_close)
+    fibonacci = compute_fibonacci(d["Close"])
 
     # ── Current values ────────────────────────────────────────────────────
-    current_price = close[-1]
-    prev_close = close[-2] if len(close) >= 2 else current_price
+    current_price = float(close.iloc[-1])
+    prev_close = float(close.iloc[-2]) if len(close) >= 2 else current_price
     change = current_price - prev_close
     change_pct = (change / prev_close) * 100.0 if prev_close != 0 else 0.0
 
-    avg_volume = sum(d_volume[-20:]) / min(20, len(d_volume)) if d_volume else 0
-    current_volume = d_volume[-1] if d_volume else 0
+    d_volume = d["Volume"]
+    avg_volume = float(d_volume.iloc[-20:].mean()) if len(d_volume) > 0 else 0
+    current_volume = float(d_volume.iloc[-1]) if len(d_volume) > 0 else 0
 
-    # Latest RSI value
-    latest_rsi = None
-    for v in reversed(rsi_series):
-        if v is not None:
-            latest_rsi = round(v, 2)
-            break
+    latest_rsi_val = rsi.dropna()
+    latest_rsi = round(float(latest_rsi_val.iloc[-1]), 2) if len(latest_rsi_val) > 0 else None
 
     # ── Crossover status ──────────────────────────────────────────────────
-    dma50_val = sma50[-1]
-    dma200_val = sma200[-1]
+    dma50_val = float(sma50.iloc[-1]) if pd.notna(sma50.iloc[-1]) else None
+    dma200_val = float(sma200.iloc[-1]) if pd.notna(sma200.iloc[-1]) else None
     crossover_signal = "none"
     gap_pct: Optional[float] = None
 
@@ -995,21 +927,22 @@ def compute_research(
         else:
             crossover_signal = "death_cross"
 
-    # ── Strategies ────────────────────────────────────────────────────────
+    # ── Strategies (all receive pre-computed indicators) ──────────────────
     strategies = [
-        strategy_trend_following(close, volume),
-        strategy_multi_factor(close, volume),
-        strategy_momentum(close),
-        strategy_stat_arb(close),
-        strategy_bollinger_squeeze(close),
-        strategy_stochastic(high, low, close),
-        strategy_adx(high, low, close),
-        strategy_obv(close, volume),
-        strategy_ml_alpha(close, volume),
+        strategy_trend_following(ind),
+        strategy_multi_factor(ind),
+        strategy_momentum(ind),
+        strategy_stat_arb(ind),
+        strategy_bollinger_squeeze(ind),
+        strategy_stochastic(ind),
+        strategy_adx(ind),
+        strategy_obv(ind),
+        strategy_ml_alpha(ind),
     ]
 
-    # ── Fundamental data (fetched in parallel above) ─────────────────────
-    fundamentals = fundamentals_early
+    # ── Serialize volume safely ───────────────────────────────────────────
+    vol_arr = d_volume.to_numpy()
+    safe_vol = [int(v) if np.isfinite(v) else 0 for v in vol_arr]
 
     # ── Build response ────────────────────────────────────────────────────
     return {
@@ -1028,25 +961,25 @@ def compute_research(
         "fundamentals": fundamentals,
         "ohlcv": {
             "dates": dates,
-            "open": _clean_list(d_open),
-            "high": _clean_list(d_high),
-            "low": _clean_list(d_low),
-            "close": _clean_list(d_close),
-            "volume": [int(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else 0 for v in d_volume],
+            "open": _clean_series(d["Open"]),
+            "high": _clean_series(d["High"]),
+            "low": _clean_series(d["Low"]),
+            "close": _clean_series(d["Close"]),
+            "volume": safe_vol,
         },
         "indicators": {
-            "sma50": _clean_list(d_sma50),
-            "sma200": _clean_list(d_sma200),
-            "rsi": _clean_list(d_rsi),
+            "sma50": _clean_series(d_sma50),
+            "sma200": _clean_series(d_sma200),
+            "rsi": _clean_series(d_rsi),
             "macd": {
-                "macdLine": _clean_list(d_macd_line),
-                "signalLine": _clean_list(d_signal_line),
-                "histogram": _clean_list(d_histogram),
+                "macdLine": _clean_series(d_macd_line),
+                "signalLine": _clean_series(d_signal_line),
+                "histogram": _clean_series(d_histogram),
             },
             "bollinger": {
-                "upper": _clean_list(d_bb_upper),
-                "middle": _clean_list(d_bb_middle),
-                "lower": _clean_list(d_bb_lower),
+                "upper": _clean_series(d_bb_upper),
+                "middle": _clean_series(d_bb_middle),
+                "lower": _clean_series(d_bb_lower),
             },
         },
         "fibonacci": fibonacci,

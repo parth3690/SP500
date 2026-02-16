@@ -1,17 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import clsx from "clsx";
 
 import { fetchMovers, fetchCrossovers, fetchOversold, apiBaseUrl } from "@/lib/api";
 import { addDays, toLocalISODate } from "@/lib/date";
 import type { MoversResponse, MoverRow, CrossoversResponse, OversoldResponse } from "@/lib/types";
-import MoversTable from "@/components/MoversTable";
-import CrossoverTable from "@/components/CrossoverTable";
-import OversoldTable from "@/components/OversoldTable";
-import SectorSummary from "@/components/SectorSummary";
-import MoversBarChart from "@/components/MoversBarChart";
-import Heatmap from "@/components/Heatmap";
+
+const MoversTable = dynamic(() => import("@/components/MoversTable"), { ssr: false });
+const CrossoverTable = dynamic(() => import("@/components/CrossoverTable"), { ssr: false });
+const OversoldTable = dynamic(() => import("@/components/OversoldTable"), { ssr: false });
+const SectorSummary = dynamic(() => import("@/components/SectorSummary"), { ssr: false });
+const MoversBarChart = dynamic(() => import("@/components/MoversBarChart"), { ssr: false });
+const Heatmap = dynamic(() => import("@/components/Heatmap"), { ssr: false });
 
 type Preset = "1w" | "1m" | "3m" | "custom";
 

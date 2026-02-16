@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Iterator
 
@@ -28,11 +29,30 @@ def _extract_close_prices(download_df: pd.DataFrame, tickers: list[str]) -> pd.D
         close.columns = [str(c) for c in close.columns]
         return close
 
-    # Single ticker case: OHLC columns in a flat index.
     if "Close" not in download_df.columns:
         return pd.DataFrame()
     ticker = tickers[0] if tickers else "TICKER"
     return download_df[["Close"]].rename(columns={"Close": ticker})
+
+
+def _download_chunk(chunk: list[str], start_iso: str, end_iso: str) -> pd.DataFrame:
+    """Download a single chunk — designed to run in a thread."""
+    import yfinance as yf
+
+    try:
+        df = yf.download(
+            tickers=chunk,
+            start=start_iso,
+            end=end_iso,
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            threads=True,
+            progress=False,
+        )
+    except Exception:
+        return pd.DataFrame()
+    return _extract_close_prices(df, chunk)
 
 
 def fetch_close_prices(
@@ -40,44 +60,38 @@ def fetch_close_prices(
     start: date,
     end: date,
     *,
-    chunk_size: int = 400,
+    chunk_size: int = 500,
 ) -> pd.DataFrame:
     """
     Fetch daily close prices for many tickers via yfinance.
 
-    Notes:
-    - Uses chunking to reduce the chance of Yahoo throttling.
-    - Adds a small date buffer so "past price" can resolve on/before start date.
+    Chunks are downloaded in parallel threads for maximum throughput.
     """
-
-    import yfinance as yf  # local import keeps module import cost off cold paths
-
     if not yahoo_tickers:
         return pd.DataFrame()
 
     buffered_start = start - timedelta(days=7)
     buffered_end = end + timedelta(days=1)
+    start_iso = buffered_start.isoformat()
+    end_iso = buffered_end.isoformat()
 
-    frames: list[pd.DataFrame] = []
     unique = list(dict.fromkeys([t.strip().upper() for t in yahoo_tickers if t and t.strip()]))
 
-    for chunk in _chunks(unique, chunk_size):
-        try:
-            df = yf.download(
-                tickers=chunk,
-                start=buffered_start.isoformat(),
-                end=buffered_end.isoformat(),
-                interval="1d",
-                group_by="ticker",
-                auto_adjust=False,
-                threads=True,
-                progress=False,
-            )
-        except Exception:
-            continue
-        close = _extract_close_prices(df, chunk)
-        if not close.empty:
-            frames.append(close)
+    chunks = list(_chunks(unique, chunk_size))
+
+    # If only one chunk, download directly (no thread overhead)
+    if len(chunks) == 1:
+        result = _download_chunk(chunks[0], start_iso, end_iso)
+        return result if not result.empty else pd.DataFrame()
+
+    # Parallel download for multiple chunks
+    frames: list[pd.DataFrame] = []
+    with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
+        futures = {pool.submit(_download_chunk, c, start_iso, end_iso): c for c in chunks}
+        for future in as_completed(futures):
+            close = future.result()
+            if not close.empty:
+                frames.append(close)
 
     if not frames:
         return pd.DataFrame()
