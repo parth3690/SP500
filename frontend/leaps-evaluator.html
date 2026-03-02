@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LEAPS Evaluator</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --border: #222222;
+    --border-light: #2a2a2a;
+    --text: #e8e8e8;
+    --muted: #555;
+    --accent: #c8f060;
+    --accent-dim: rgba(200,240,96,0.12);
+    --red: #ff5252;
+    --yellow: #ffd166;
+    --green: #c8f060;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    min-height: 100vh;
+    padding: 40px 24px;
+  }
+
+  .container { max-width: 860px; margin: 0 auto; }
+
+  header {
+    border-bottom: 1px solid var(--border-light);
+    padding-bottom: 24px;
+    margin-bottom: 36px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  header h1 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    color: var(--accent);
+  }
+
+  header p {
+    font-size: 13px;
+    color: var(--muted);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* Score bar */
+  .score-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 32px;
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+  }
+
+  .score-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 42px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    min-width: 80px;
+  }
+
+  .score-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+
+  .verdict {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    padding: 6px 12px;
+    border: 1px solid currentColor;
+    font-weight: 500;
+  }
+  .verdict.pass { color: var(--green); border-color: var(--green); }
+  .verdict.watch { color: var(--yellow); border-color: var(--yellow); }
+  .verdict.skip { color: var(--red); border-color: var(--red); }
+
+  .bar-wrap { flex: 1; height: 4px; background: var(--border); }
+  .bar-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+
+  /* Ticker input */
+  .ticker-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+
+  .ticker-input {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 18px;
+    font-weight: 600;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    color: var(--text);
+    padding: 12px 16px;
+    width: 160px;
+    text-transform: uppercase;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .ticker-input:focus { border-color: var(--accent); }
+  .ticker-input::placeholder { color: var(--muted); font-weight: 400; }
+
+  /* Conditions grid */
+  .conditions { display: flex; flex-direction: column; gap: 2px; }
+
+  .condition {
+    display: grid;
+    grid-template-columns: 36px 1fr auto;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid transparent;
+    transition: border-color 0.15s, background 0.15s;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .condition:hover { border-color: var(--border-light); }
+  .condition.active { background: var(--accent-dim); border-color: rgba(200,240,96,0.25); }
+
+  .condition-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  .condition-body {}
+  .condition-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+  .condition-desc {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .check {
+    width: 22px;
+    height: 22px;
+    border: 1.5px solid var(--border-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .condition.active .check {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .check svg { display: none; }
+  .condition.active .check svg { display: block; }
+
+  /* Priority badge */
+  .priority {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    padding: 2px 6px;
+    border: 1px solid var(--border-light);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .priority.core { border-color: #c8f06044; color: var(--accent); }
+
+  /* Notes section */
+  .notes-section {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  @media (max-width: 600px) {
+    .notes-section { grid-template-columns: 1fr; }
+  }
+
+  .notes-block label {
+    display: block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+
+  .notes-block textarea, .notes-block input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    padding: 10px 12px;
+    outline: none;
+    resize: vertical;
+    transition: border-color 0.2s;
+  }
+  .notes-block textarea:focus, .notes-block input:focus { border-color: var(--accent); }
+  .notes-block textarea { min-height: 80px; }
+
+  /* Scan ideas */
+  .scan-section {
+    margin-top: 40px;
+    border-top: 1px solid var(--border-light);
+    padding-top: 32px;
+  }
+
+  .section-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+
+  .scan-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 2px;
+  }
+
+  .scan-card {
+    background: var(--surface);
+    border: 1px solid transparent;
+    padding: 14px 16px;
+    transition: border-color 0.15s;
+  }
+
+  .scan-card:hover { border-color: var(--border-light); }
+
+  .scan-card h3 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+
+  .scan-card p {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* Saved list */
+  .saved-section {
+    margin-top: 40px;
+    border-top: 1px solid var(--border-light);
+    padding-top: 32px;
+  }
+
+  .saved-list { display: flex; flex-direction: column; gap: 2px; }
+
+  .saved-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--surface);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+
+  .saved-ticker { color: var(--accent); font-weight: 600; min-width: 60px; }
+  .saved-score { color: var(--muted); min-width: 40px; }
+  .saved-date { color: var(--muted); font-size: 10px; margin-left: auto; }
+  .saved-del { color: var(--muted); cursor: pointer; background: none; border: none; font-size: 14px; }
+  .saved-del:hover { color: var(--red); }
+  .saved-load { color: var(--muted); cursor: pointer; background: none; border: none; font-size: 11px; text-decoration: underline; }
+  .saved-load:hover { color: var(--accent); }
+
+  .empty-state {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    padding: 16px;
+  }
+
+  .btn {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 10px 20px;
+    cursor: pointer;
+    border: 1.5px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: var(--accent); color: var(--bg); }
+  .btn.ghost { border-color: var(--border-light); color: var(--muted); }
+  .btn.ghost:hover { border-color: var(--muted); color: var(--text); background: transparent; }
+
+  .action-row { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>LEAPS / EVALUATOR</h1>
+    <p>Your framework · 9 conditions · conviction required</p>
+  </header>
+
+  <div class="ticker-row">
+    <input class="ticker-input" id="ticker" type="text" placeholder="TICKER" maxlength="6" oninput="this.value=this.value.toUpperCase()">
+  </div>
+
+  <div id="score-row" class="score-row">
+    <div>
+      <div class="score-num" id="score-num">0</div>
+      <div class="score-label">of 9 conditions</div>
+    </div>
+    <div class="bar-wrap"><div class="bar-fill" id="bar-fill" style="width:0%"></div></div>
+    <div class="verdict skip" id="verdict">NO TRADE</div>
+  </div>
+
+  <div class="conditions" id="conditions-list"></div>
+
+  <div class="notes-section">
+    <div class="notes-block">
+      <label>Thesis / Conviction Notes</label>
+      <textarea id="notes-thesis" placeholder="Why would you hold this stock for years?"></textarea>
+    </div>
+    <div class="notes-block">
+      <label>Trade Setup</label>
+      <textarea id="notes-setup" placeholder="Strike, expiry, IV rank, entry price..."></textarea>
+    </div>
+  </div>
+
+  <div class="action-row">
+    <button class="btn" onclick="saveEval()">Save Evaluation</button>
+    <button class="btn ghost" onclick="resetAll()">Clear</button>
+  </div>
+
+  <!-- Scan Ideas -->
+  <div class="scan-section">
+    <div class="section-label">Where to find setups</div>
+    <div class="scan-grid">
+      <div class="scan-card">
+        <h3>RSI Screen</h3>
+        <p>Finviz: RSI(14) under 35 on daily. Thinkorswim: custom scan for RSI &lt; 30 on weekly. Cross-check both timeframes for alignment.</p>
+      </div>
+      <div class="scan-card">
+        <h3>52-Week Lows + Prior Base</h3>
+        <p>Stocks down 30–60% YTD retesting multi-year support. Look for failed breakdowns and base patterns on the weekly chart.</p>
+      </div>
+      <div class="scan-card">
+        <h3>IV Rank &lt; 30</h3>
+        <p>Market Chameleon or Thinkorswim IV Rank scan. Filter for IVR under 30. Avoid buying LEAPS after an earnings IV spike.</p>
+      </div>
+      <div class="scan-card">
+        <h3>Strong Business, Weak Price</h3>
+        <p>High-conviction names in your watchlist that are down 20–40% from highs without a fundamental reason. Sector-wide selloffs often create mispricings.</p>
+      </div>
+      <div class="scan-card">
+        <h3>200 SMA Touches</h3>
+        <p>Scan for stocks touching or piercing the 200-day SMA for the first time in a trend. Especially powerful when RSI is simultaneously oversold.</p>
+      </div>
+      <div class="scan-card">
+        <h3>Liquid Options Filter</h3>
+        <p>After finding a setup, check open interest on the 12–18 month chain. Minimum ~500 OI, bid-ask spread under 1% of mid on a $5+ contract.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Saved Evaluations -->
+  <div class="saved-section">
+    <div class="section-label">Saved Evaluations</div>
+    <div class="saved-list" id="saved-list"></div>
+  </div>
+
+</div>
+
+<script>
+const CONDITIONS = [
+  {
+    num: "01",
+    title: "Deep Conviction — Hold for Years",
+    desc: "You'd own the stock long-term. This is a leveraged bet on a business you believe in, not a trade.",
+    core: true
+  },
+  {
+    num: "02",
+    title: "RSI Oversold — Multiple Timeframes",
+    desc: "Daily RSI oversold is the floor. Weekly oversold is the signal. More alignment = more size.",
+    core: true
+  },
+  {
+    num: "03",
+    title: "Price at Meaningful Support",
+    desc: "Prior bases, long-term support, 50 or 200 SMA. Not just 'it's down a lot.'",
+    core: true
+  },
+  {
+    num: "04",
+    title: "Favorable IV (Low IV Rank)",
+    desc: "Low IV = cheaper premiums, better risk-reward. If IV expands after entry, it helps you.",
+    core: false
+  },
+  {
+    num: "05",
+    title: "Liquid Options Chain",
+    desc: "Tight bid-ask spreads. Strong open interest and volume on your target expiry.",
+    core: false
+  },
+  {
+    num: "06",
+    title: "360+ DTE",
+    desc: "Enough time for thesis to play out. Also qualifies for long-term capital gains (>1 year).",
+    core: false
+  },
+  {
+    num: "07",
+    title: "Strike ~10% OTM",
+    desc: "Not a lottery ticket, not overpaying for ATM. Balance leverage with realistic probability.",
+    core: false
+  },
+  {
+    num: "08",
+    title: "Plan to Scale Out on Strength",
+    desc: "When it's working, sell a portion to recover cost basis. Let the remainder ride risk-free.",
+    core: false
+  },
+  {
+    num: "09",
+    title: "Plan Defined Before 60 DTE",
+    desc: "Theta accelerates hard. Know your exit: sell, roll, or exercise — decided well in advance.",
+    core: false
+  }
+];
+
+let checked = new Array(9).fill(false);
+let saved = JSON.parse(localStorage.getItem('leaps_saved') || '[]');
+
+function renderConditions() {
+  const el = document.getElementById('conditions-list');
+  el.innerHTML = CONDITIONS.map((c, i) => `
+    <div class="condition ${checked[i] ? 'active' : ''}" onclick="toggle(${i})">
+      <div class="condition-num">${c.num}</div>
+      <div class="condition-body">
+        <div class="condition-title">${c.title} ${c.core ? '<span class="priority core">CORE</span>' : ''}</div>
+        <div class="condition-desc">${c.desc}</div>
+      </div>
+      <div class="check">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <polyline points="2,6 5,9 10,3" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggle(i) {
+  checked[i] = !checked[i];
+  renderConditions();
+  updateScore();
+}
+
+function updateScore() {
+  const count = checked.filter(Boolean).length;
+  const pct = (count / 9) * 100;
+  document.getElementById('score-num').textContent = count;
+  document.getElementById('bar-fill').style.width = pct + '%';
+  const v = document.getElementById('verdict');
+  if (count >= 7) { v.textContent = 'HIGH CONVICTION'; v.className = 'verdict pass'; }
+  else if (count >= 5) { v.textContent = 'WATCH'; v.className = 'verdict watch'; }
+  else if (count >= 3) { v.textContent = 'NEEDS MORE'; v.className = 'verdict watch'; }
+  else { v.textContent = 'NO TRADE'; v.className = 'verdict skip'; }
+}
+
+function saveEval() {
+  const ticker = document.getElementById('ticker').value.trim();
+  if (!ticker) { alert('Enter a ticker first.'); return; }
+  const count = checked.filter(Boolean).length;
+  const entry = {
+    id: Date.now(),
+    ticker,
+    score: count,
+    checked: [...checked],
+    thesis: document.getElementById('notes-thesis').value,
+    setup: document.getElementById('notes-setup').value,
+    date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
+  };
+  saved.unshift(entry);
+  if (saved.length > 20) saved.pop();
+  localStorage.setItem('leaps_saved', JSON.stringify(saved));
+  renderSaved();
+}
+
+function loadEval(id) {
+  const entry = saved.find(s => s.id === id);
+  if (!entry) return;
+  document.getElementById('ticker').value = entry.ticker;
+  checked = [...entry.checked];
+  document.getElementById('notes-thesis').value = entry.thesis || '';
+  document.getElementById('notes-setup').value = entry.setup || '';
+  renderConditions();
+  updateScore();
+}
+
+function deleteEval(id) {
+  saved = saved.filter(s => s.id !== id);
+  localStorage.setItem('leaps_saved', JSON.stringify(saved));
+  renderSaved();
+}
+
+function renderSaved() {
+  const el = document.getElementById('saved-list');
+  if (!saved.length) {
+    el.innerHTML = '<div class="empty-state">No saved evaluations yet.</div>';
+    return;
+  }
+  el.innerHTML = saved.map(s => `
+    <div class="saved-item">
+      <span class="saved-ticker">${s.ticker}</span>
+      <span class="saved-score">${s.score}/9</span>
+      <span style="color:${s.score>=7?'var(--green)':s.score>=5?'var(--yellow)':'var(--red)'}; font-size:10px;">
+        ${s.score>=7?'HIGH CONVICTION':s.score>=5?'WATCH':'NO TRADE'}
+      </span>
+      <button class="saved-load" onclick="loadEval(${s.id})">load</button>
+      <span class="saved-date">${s.date}</span>
+      <button class="saved-del" onclick="deleteEval(${s.id})">×</button>
+    </div>
+  `).join('');
+}
+
+function resetAll() {
+  checked = new Array(9).fill(false);
+  document.getElementById('ticker').value = '';
+  document.getElementById('notes-thesis').value = '';
+  document.getElementById('notes-setup').value = '';
+  renderConditions();
+  updateScore();
+}
+
+renderConditions();
+updateScore();
+renderSaved();
+</script>
+</body>
+</html>

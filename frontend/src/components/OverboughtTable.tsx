@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 
-import type { OversoldRow } from "@/lib/types";
+import type { OverboughtRow } from "@/lib/types";
 
 type SortKey = "ticker" | "companyName" | "sector" | "currentPrice" | "weeklyRSI" | "dailyRSI";
 type SortDir = "asc" | "desc";
@@ -23,26 +23,26 @@ function formatMoney(v: number): string {
 
 function rsiColor(rsi: number | null): string {
   if (rsi == null) return "text-slate-400";
-  if (rsi <= 20) return "text-emerald-400 font-bold";
-  if (rsi <= 25) return "text-emerald-300";
-  return "text-emerald-200";
+  if (rsi >= 90) return "text-rose-400 font-bold";
+  if (rsi >= 85) return "text-rose-300";
+  return "text-rose-200";
 }
 
 function rsiBadge(rsi: number): string {
-  if (rsi <= 20) return "Extremely Oversold";
-  if (rsi <= 25) return "Very Oversold";
-  return "Oversold";
+  if (rsi >= 90) return "Extremely Overbought";
+  if (rsi >= 85) return "Very Overbought";
+  return "Overbought";
 }
 
-export default function OversoldTable(props: {
+export default function OverboughtTable(props: {
   title: string;
   subtitle?: string;
-  rows: OversoldRow[];
+  rows: OverboughtRow[];
   /** Default sort column (e.g. "dailyRSI" for daily RSI tables). */
   initialSortKey?: SortKey;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>(props.initialSortKey ?? "weeklyRSI");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const sorted = useMemo(() => {
     const copy = [...props.rows];
@@ -66,7 +66,7 @@ export default function OversoldTable(props: {
           setSortDir((d) => (d === "asc" ? "desc" : "asc"));
         } else {
           setSortKey(key);
-          setSortDir("asc");
+          setSortDir("desc");
         }
       }}
     >
@@ -78,14 +78,14 @@ export default function OversoldTable(props: {
   );
 
   return (
-    <div className="rounded-xl border border-emerald-500/30 bg-slate-900/30">
+    <div className="rounded-xl border border-rose-500/30 bg-slate-900/30">
       {(props.title || props.subtitle) && (
-        <div className="border-b border-emerald-500/30 bg-emerald-950/10 px-4 py-3">
+        <div className="border-b border-rose-500/30 bg-rose-950/10 px-4 py-3">
           <div className="flex items-center gap-2">
             {props.title ? (
               <h2 className="text-sm font-semibold text-slate-200">{props.title}</h2>
             ) : null}
-            <span className="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-400/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+            <span className="inline-flex items-center rounded-full border border-rose-400/30 bg-rose-400/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-rose-300">
               {props.rows.length} stocks
             </span>
           </div>
@@ -98,7 +98,7 @@ export default function OversoldTable(props: {
       <div className="overflow-auto">
         <table className="w-full">
           <thead className="bg-slate-950/40">
-            <tr className="border-b border-emerald-500/30">
+            <tr className="border-b border-rose-500/30">
               <th className="w-[8%]">{headerCell("ticker", "Ticker")}</th>
               <th className="w-[24%]">{headerCell("companyName", "Company")}</th>
               <th className="w-[18%]">{headerCell("sector", "Sector")}</th>
@@ -119,7 +119,7 @@ export default function OversoldTable(props: {
                 <td className="px-3 py-2 text-sm font-semibold">
                   <Link
                     href={`/research/${encodeURIComponent(r.ticker)}`}
-                    className="text-emerald-200 underline decoration-dotted underline-offset-2 transition-colors hover:text-emerald-100"
+                    className="text-rose-200 underline decoration-dotted underline-offset-2 transition-colors hover:text-rose-100"
                   >
                     {r.ticker}
                   </Link>
@@ -135,7 +135,7 @@ export default function OversoldTable(props: {
                   {r.weeklyRSI != null ? (
                     <div className="mt-0.5 h-1 w-full rounded-full bg-slate-800">
                       <div
-                        className="h-full rounded-full bg-emerald-500 transition-all"
+                        className="h-full rounded-full bg-rose-500 transition-all"
                         style={{ width: `${Math.min(100, r.weeklyRSI)}%` }}
                       />
                     </div>
@@ -149,11 +149,11 @@ export default function OversoldTable(props: {
                     <span
                       className={clsx(
                         "inline-block rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                        (r.weeklyRSI ?? r.dailyRSI)! <= 20
-                          ? "border-emerald-400/40 bg-emerald-400/20 text-emerald-300"
-                          : (r.weeklyRSI ?? r.dailyRSI)! <= 25
-                          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-400"
-                          : "border-emerald-500/20 bg-emerald-500/10 text-emerald-400/80"
+                        (r.weeklyRSI ?? r.dailyRSI)! >= 90
+                          ? "border-rose-400/40 bg-rose-400/20 text-rose-300"
+                          : (r.weeklyRSI ?? r.dailyRSI)! >= 85
+                          ? "border-rose-400/30 bg-rose-400/10 text-rose-400"
+                          : "border-rose-500/20 bg-rose-500/10 text-rose-400/80"
                       )}
                     >
                       {rsiBadge((r.weeklyRSI ?? r.dailyRSI)!)}
@@ -167,7 +167,7 @@ export default function OversoldTable(props: {
             {sorted.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-6 text-sm text-slate-400">
-                  No stocks with weekly RSI below the threshold.
+                  No stocks with weekly RSI above the threshold.
                 </td>
               </tr>
             ) : null}
@@ -175,8 +175,8 @@ export default function OversoldTable(props: {
         </table>
       </div>
 
-      <div className="border-t border-emerald-500/30 px-4 py-3 text-xs text-slate-400">
-        Weekly RSI below 30 indicates the stock has been heavily sold on a weekly timeframe — a potential buying opportunity as the selling pressure may be exhausted.
+      <div className="border-t border-rose-500/30 px-4 py-3 text-xs text-slate-400">
+        Weekly RSI above 70 indicates the stock has been heavily bought on a weekly timeframe — potential overbought territory where buying pressure may be exhausted and a pullback could occur.
       </div>
     </div>
   );

@@ -18,7 +18,7 @@ RESEARCH_TTL_SECONDS = int(os.getenv("RESEARCH_TTL_SECONDS", "900"))
 RESEARCH_CACHE: TTLCache = TTLCache(maxsize=32, ttl=RESEARCH_TTL_SECONDS)
 
 RSI_SCAN_TTL_SECONDS = int(os.getenv("RSI_SCAN_TTL_SECONDS", "900"))
-RSI_SCAN_CACHE: TTLCache = TTLCache(maxsize=4, ttl=RSI_SCAN_TTL_SECONDS)
+RSI_SCAN_CACHE: TTLCache = TTLCache(maxsize=8, ttl=RSI_SCAN_TTL_SECONDS)
 
 # Shared S&P 500 price data cache — avoids redundant Yahoo downloads
 # across movers, crossovers, and RSI endpoints

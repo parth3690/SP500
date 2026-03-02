@@ -70,7 +70,7 @@ export type OversoldRow = {
   sector: string;
   currentPrice: number;
   priceDate: string;
-  weeklyRSI: number;
+  weeklyRSI: number | null;
   dailyRSI: number | null;
 };
 
@@ -83,6 +83,30 @@ export type OversoldResponse = {
     computed: number;
     skipped: number;
     oversoldCount: number;
+    rsiThreshold: number;
+    computedAt: string;
+  };
+};
+
+export type OverboughtRow = {
+  ticker: string;
+  companyName: string;
+  sector: string;
+  currentPrice: number;
+  priceDate: string;
+  weeklyRSI: number | null;
+  dailyRSI: number | null;
+};
+
+export type OverboughtResponse = {
+  asOf: string;
+  rsiThreshold: number;
+  stocks: OverboughtRow[];
+  meta: {
+    total: number;
+    computed: number;
+    skipped: number;
+    overboughtCount: number;
     rsiThreshold: number;
     computedAt: string;
   };

@@ -17,6 +17,7 @@ from .models import (
     Constituent, MoversResponse, MoverRow, SectorSummaryRow,
     CrossoverRow, CrossoversResponse,
     OversoldRow, OversoldResponse,
+    OverboughtRow, OverboughtResponse,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
@@ -26,7 +27,12 @@ from .services.cache import (
 from .services.movers import compute_movers
 from .services.crossovers import compute_crossovers
 from .services.research import compute_research
-from .services.rsi_scan import compute_rsi_scan
+from .services.rsi_scan import (
+    compute_rsi_scan,
+    compute_rsi_scan_overbought,
+    compute_rsi_scan_daily_oversold,
+    compute_rsi_scan_daily_overbought,
+)
 from .services.prices import fetch_close_prices
 from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
 
@@ -123,14 +129,43 @@ async def _preload_dashboard_data() -> None:
                 "asOf": datetime.now(timezone.utc),
             })
 
-        # Pre-compute RSI oversold
-        rsi_key = "rsi_oversold_30.0"
-        if cache_get(RSI_SCAN_CACHE, rsi_key) is None:
+        # Pre-compute RSI oversold (below 30) and overbought (above 70)
+        rsi_oversold_key = "rsi_oversold_30.0"
+        if cache_get(RSI_SCAN_CACHE, rsi_oversold_key) is None:
             r_rows, r_meta = await run_in_threadpool(
                 compute_rsi_scan, constituents_list, close_prices, rsi_threshold=30.0
             )
-            cache_set(RSI_SCAN_CACHE, rsi_key, {
+            cache_set(RSI_SCAN_CACHE, rsi_oversold_key, {
                 "rows": r_rows, "meta": r_meta,
+                "asOf": datetime.now(timezone.utc),
+            })
+        rsi_overbought_key = "rsi_overbought_70.0"
+        if cache_get(RSI_SCAN_CACHE, rsi_overbought_key) is None:
+            ob_rows, ob_meta = await run_in_threadpool(
+                compute_rsi_scan_overbought, constituents_list, close_prices, rsi_threshold=70.0
+            )
+            cache_set(RSI_SCAN_CACHE, rsi_overbought_key, {
+                "rows": ob_rows, "meta": ob_meta,
+                "asOf": datetime.now(timezone.utc),
+            })
+
+        # Pre-compute Daily RSI oversold (below 30) and overbought (above 70)
+        daily_oversold_key = "rsi_daily_oversold_30.0"
+        if cache_get(RSI_SCAN_CACHE, daily_oversold_key) is None:
+            do_rows, do_meta = await run_in_threadpool(
+                compute_rsi_scan_daily_oversold, constituents_list, close_prices, rsi_threshold=30.0
+            )
+            cache_set(RSI_SCAN_CACHE, daily_oversold_key, {
+                "rows": do_rows, "meta": do_meta,
+                "asOf": datetime.now(timezone.utc),
+            })
+        daily_overbought_key = "rsi_daily_overbought_70.0"
+        if cache_get(RSI_SCAN_CACHE, daily_overbought_key) is None:
+            dob_rows, dob_meta = await run_in_threadpool(
+                compute_rsi_scan_daily_overbought, constituents_list, close_prices, rsi_threshold=70.0
+            )
+            cache_set(RSI_SCAN_CACHE, daily_overbought_key, {
+                "rows": dob_rows, "meta": dob_meta,
                 "asOf": datetime.now(timezone.utc),
             })
 
@@ -310,6 +345,123 @@ async def rsi_oversold(
         asOf=cached["asOf"],
         rsiThreshold=threshold,
         stocks=[OversoldRow(**r) for r in cached["rows"]],
+        meta=cached["meta"],
+    )
+
+
+@app.get("/api/rsi-overbought", response_model=OverboughtResponse)
+async def rsi_overbought(
+    threshold: float = Query(70.0, ge=50.0, le=99.0, description="Weekly RSI threshold (stocks at or above this are returned)"),
+    refresh: bool = Query(False),
+) -> OverboughtResponse:
+    """
+    Returns S&P 500 stocks where the weekly (14-period) RSI is at or above
+    the given threshold, highlighting overbought conditions.
+    """
+    cache_key = f"rsi_overbought_{threshold}"
+
+    cached = None if refresh else cache_get(RSI_SCAN_CACHE, cache_key)
+    if cached is None:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
+
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
+        rows, meta = await run_in_threadpool(
+            compute_rsi_scan_overbought, constituents_list, close_prices, rsi_threshold=threshold
+        )
+
+        cached = {
+            "rows": rows,
+            "meta": meta,
+            "asOf": datetime.now(timezone.utc),
+        }
+        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+
+    return OverboughtResponse(
+        asOf=cached["asOf"],
+        rsiThreshold=threshold,
+        stocks=[OverboughtRow(**r) for r in cached["rows"]],
+        meta=cached["meta"],
+    )
+
+
+@app.get("/api/rsi-daily-oversold", response_model=OversoldResponse)
+async def rsi_daily_oversold(
+    threshold: float = Query(30.0, ge=1.0, le=50.0, description="Daily RSI threshold (stocks at or below this are returned)"),
+    refresh: bool = Query(False),
+) -> OversoldResponse:
+    """
+    Returns S&P 500 stocks where the daily (14-period) RSI is at or below
+    the given threshold, highlighting oversold conditions.
+    """
+    cache_key = f"rsi_daily_oversold_{threshold}"
+
+    cached = None if refresh else cache_get(RSI_SCAN_CACHE, cache_key)
+    if cached is None:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
+        rows, meta = await run_in_threadpool(
+            compute_rsi_scan_daily_oversold, constituents_list, close_prices, rsi_threshold=threshold
+        )
+        cached = {
+            "rows": rows,
+            "meta": meta,
+            "asOf": datetime.now(timezone.utc),
+        }
+        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+
+    return OversoldResponse(
+        asOf=cached["asOf"],
+        rsiThreshold=threshold,
+        stocks=[OversoldRow(**r) for r in cached["rows"]],
+        meta=cached["meta"],
+    )
+
+
+@app.get("/api/rsi-daily-overbought", response_model=OverboughtResponse)
+async def rsi_daily_overbought(
+    threshold: float = Query(70.0, ge=50.0, le=99.0, description="Daily RSI threshold (stocks at or above this are returned)"),
+    refresh: bool = Query(False),
+) -> OverboughtResponse:
+    """
+    Returns S&P 500 stocks where the daily (14-period) RSI is at or above
+    the given threshold, highlighting overbought conditions.
+    """
+    cache_key = f"rsi_daily_overbought_{threshold}"
+
+    cached = None if refresh else cache_get(RSI_SCAN_CACHE, cache_key)
+    if cached is None:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
+        rows, meta = await run_in_threadpool(
+            compute_rsi_scan_daily_overbought, constituents_list, close_prices, rsi_threshold=threshold
+        )
+        cached = {
+            "rows": rows,
+            "meta": meta,
+            "asOf": datetime.now(timezone.utc),
+        }
+        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+
+    return OverboughtResponse(
+        asOf=cached["asOf"],
+        rsiThreshold=threshold,
+        stocks=[OverboughtRow(**r) for r in cached["rows"]],
         meta=cached["meta"],
     )
 

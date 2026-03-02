@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, ResearchData } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -61,6 +61,57 @@ export async function fetchOversold(params?: {
     throw new Error(`API error (${res.status}): ${text || res.statusText}`);
   }
   return (await res.json()) as OversoldResponse;
+}
+
+export async function fetchOverbought(params?: {
+  threshold?: number;
+  refresh?: boolean;
+}): Promise<OverboughtResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/rsi-overbought`);
+  if (params?.threshold != null) url.searchParams.set("threshold", String(params.threshold));
+  if (params?.refresh) url.searchParams.set("refresh", "true");
+
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+  }
+  return (await res.json()) as OverboughtResponse;
+}
+
+export async function fetchDailyOversold(params?: {
+  threshold?: number;
+  refresh?: boolean;
+}): Promise<OversoldResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/rsi-daily-oversold`);
+  if (params?.threshold != null) url.searchParams.set("threshold", String(params.threshold));
+  if (params?.refresh) url.searchParams.set("refresh", "true");
+
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+  }
+  return (await res.json()) as OversoldResponse;
+}
+
+export async function fetchDailyOverbought(params?: {
+  threshold?: number;
+  refresh?: boolean;
+}): Promise<OverboughtResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/rsi-daily-overbought`);
+  if (params?.threshold != null) url.searchParams.set("threshold", String(params.threshold));
+  if (params?.refresh) url.searchParams.set("refresh", "true");
+
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+  }
+  return (await res.json()) as OverboughtResponse;
 }
 
 export async function fetchResearch(

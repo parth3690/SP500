@@ -11,3 +11,8 @@ export function addDays(isoDate: string, days: number): string {
   return toLocalISODate(dt);
 }
 
+/** Start of year for an ISO date (YYYY-MM-DD). Returns YYYY-01-01. */
+export function startOfYear(isoDate: string): string {
+  return isoDate.slice(0, 4) + "-01-01";
+}
+

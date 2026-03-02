@@ -105,3 +105,223 @@ def compute_rsi_scan(
     }
 
     return rows, meta
+
+
+def compute_rsi_scan_overbought(
+    constituents: Iterable[Constituent],
+    close_prices: pd.DataFrame,
+    *,
+    rsi_threshold: float = 70.0,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Weekly RSI scan for overbought: returns stocks where weekly RSI is at or above threshold.
+    Same structure as oversold scan but filters latest_rsi >= rsi_threshold, sorted by RSI descending.
+    """
+    if close_prices is None or close_prices.empty:
+        return [], {"computed": 0, "total": 0, "overboughtCount": 0}
+
+    close_prices = close_prices.sort_index()
+    weekly_prices = close_prices.resample("W-FRI").last().dropna(how="all")
+    weekly_rsi_all = _batch_rsi(weekly_prices, 14)
+    daily_rsi_all = _batch_rsi(close_prices, 14)
+
+    const_map: dict[str, Constituent] = {}
+    total = 0
+    for c in constituents:
+        total += 1
+        const_map[c.yahooTicker] = c
+
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    available = set(weekly_rsi_all.columns) & set(const_map.keys())
+
+    for ticker in available:
+        weekly_col = weekly_rsi_all[ticker].dropna()
+        if len(weekly_col) < 1:
+            skipped += 1
+            continue
+
+        latest_rsi = float(weekly_col.iloc[-1])
+        if pd.isna(latest_rsi) or latest_rsi < rsi_threshold:
+            continue
+
+        c = const_map[ticker]
+        daily_rsi = None
+        if ticker in daily_rsi_all.columns:
+            daily_col = daily_rsi_all[ticker].dropna()
+            if len(daily_col) > 0:
+                daily_rsi = round(float(daily_col.iloc[-1]), 2)
+
+        price_col = close_prices[ticker].dropna()
+        latest_price = float(price_col.iloc[-1])
+        latest_date = price_col.index[-1]
+
+        rows.append({
+            "ticker": c.ticker,
+            "companyName": c.companyName,
+            "sector": c.sector,
+            "currentPrice": round(latest_price, 2),
+            "priceDate": latest_date.date() if hasattr(latest_date, "date") else latest_date,
+            "weeklyRSI": round(latest_rsi, 2),
+            "dailyRSI": daily_rsi,
+        })
+
+    skipped += total - len(available)
+    rows.sort(key=lambda r: r["weeklyRSI"], reverse=True)
+
+    meta = {
+        "total": total,
+        "computed": len(available) - skipped,
+        "skipped": skipped,
+        "overboughtCount": len(rows),
+        "rsiThreshold": rsi_threshold,
+        "computedAt": datetime.utcnow().isoformat() + "Z",
+    }
+
+    return rows, meta
+
+
+def compute_rsi_scan_daily_oversold(
+    constituents: Iterable[Constituent],
+    close_prices: pd.DataFrame,
+    *,
+    rsi_threshold: float = 30.0,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Daily RSI oversold scan: returns stocks where daily RSI is at or below threshold.
+    Row structure matches weekly (weeklyRSI included for reference).
+    """
+    if close_prices is None or close_prices.empty:
+        return [], {"computed": 0, "total": 0, "oversoldCount": 0}
+
+    close_prices = close_prices.sort_index()
+    daily_rsi_all = _batch_rsi(close_prices, 14)
+    weekly_prices = close_prices.resample("W-FRI").last().dropna(how="all")
+    weekly_rsi_all = _batch_rsi(weekly_prices, 14)
+
+    const_map: dict[str, Constituent] = {}
+    total = 0
+    for c in constituents:
+        total += 1
+        const_map[c.yahooTicker] = c
+
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    available = set(daily_rsi_all.columns) & set(const_map.keys())
+
+    for ticker in available:
+        daily_col = daily_rsi_all[ticker].dropna()
+        if len(daily_col) < 1:
+            skipped += 1
+            continue
+
+        latest_daily = float(daily_col.iloc[-1])
+        if pd.isna(latest_daily) or latest_daily > rsi_threshold:
+            continue
+
+        c = const_map[ticker]
+        weekly_rsi = None
+        if ticker in weekly_rsi_all.columns:
+            weekly_col = weekly_rsi_all[ticker].dropna()
+            if len(weekly_col) > 0:
+                weekly_rsi = round(float(weekly_col.iloc[-1]), 2)
+
+        price_col = close_prices[ticker].dropna()
+        latest_price = float(price_col.iloc[-1])
+        latest_date = price_col.index[-1]
+
+        rows.append({
+            "ticker": c.ticker,
+            "companyName": c.companyName,
+            "sector": c.sector,
+            "currentPrice": round(latest_price, 2),
+            "priceDate": latest_date.date() if hasattr(latest_date, "date") else latest_date,
+            "weeklyRSI": weekly_rsi,
+            "dailyRSI": round(latest_daily, 2),
+        })
+
+    skipped += total - len(available)
+    rows.sort(key=lambda r: r["dailyRSI"])
+
+    meta = {
+        "total": total,
+        "computed": len(available) - skipped,
+        "skipped": skipped,
+        "oversoldCount": len(rows),
+        "rsiThreshold": rsi_threshold,
+        "computedAt": datetime.utcnow().isoformat() + "Z",
+    }
+    return rows, meta
+
+
+def compute_rsi_scan_daily_overbought(
+    constituents: Iterable[Constituent],
+    close_prices: pd.DataFrame,
+    *,
+    rsi_threshold: float = 70.0,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Daily RSI overbought scan: returns stocks where daily RSI is at or above threshold.
+    Row structure matches weekly (weeklyRSI included for reference).
+    """
+    if close_prices is None or close_prices.empty:
+        return [], {"computed": 0, "total": 0, "overboughtCount": 0}
+
+    close_prices = close_prices.sort_index()
+    daily_rsi_all = _batch_rsi(close_prices, 14)
+    weekly_prices = close_prices.resample("W-FRI").last().dropna(how="all")
+    weekly_rsi_all = _batch_rsi(weekly_prices, 14)
+
+    const_map: dict[str, Constituent] = {}
+    total = 0
+    for c in constituents:
+        total += 1
+        const_map[c.yahooTicker] = c
+
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    available = set(daily_rsi_all.columns) & set(const_map.keys())
+
+    for ticker in available:
+        daily_col = daily_rsi_all[ticker].dropna()
+        if len(daily_col) < 1:
+            skipped += 1
+            continue
+
+        latest_daily = float(daily_col.iloc[-1])
+        if pd.isna(latest_daily) or latest_daily < rsi_threshold:
+            continue
+
+        c = const_map[ticker]
+        weekly_rsi = None
+        if ticker in weekly_rsi_all.columns:
+            weekly_col = weekly_rsi_all[ticker].dropna()
+            if len(weekly_col) > 0:
+                weekly_rsi = round(float(weekly_col.iloc[-1]), 2)
+
+        price_col = close_prices[ticker].dropna()
+        latest_price = float(price_col.iloc[-1])
+        latest_date = price_col.index[-1]
+
+        rows.append({
+            "ticker": c.ticker,
+            "companyName": c.companyName,
+            "sector": c.sector,
+            "currentPrice": round(latest_price, 2),
+            "priceDate": latest_date.date() if hasattr(latest_date, "date") else latest_date,
+            "weeklyRSI": weekly_rsi,
+            "dailyRSI": round(latest_daily, 2),
+        })
+
+    skipped += total - len(available)
+    rows.sort(key=lambda r: r["dailyRSI"], reverse=True)
+
+    meta = {
+        "total": total,
+        "computed": len(available) - skipped,
+        "skipped": skipped,
+        "overboughtCount": len(rows),
+        "rsiThreshold": rsi_threshold,
+        "computedAt": datetime.utcnow().isoformat() + "Z",
+    }
+    return rows, meta
