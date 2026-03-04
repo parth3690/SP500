@@ -786,6 +786,9 @@ export default function ResearchPage() {
         </div>
       </div>
 
+      {/* ── Quantitative Stock Screening Guide ── */}
+      <QuantitativeScreeningGuide />
+
       {/* Footer spacer */}
       <div className="h-12" />
     </div>
@@ -914,6 +917,236 @@ function StrategyCard({ strategy }: { strategy: ResearchData["strategies"][numbe
             <div className="text-xs font-semibold text-slate-200">{value}</div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Quantitative Stock Screening Guide (6 formulas) ────────────────────────
+
+const SCREENING_FORMULAS = [
+  {
+    id: "bayes",
+    name: "Bayes' Theorem",
+    tagline: "How Likely Is This Signal to Be Real?",
+    formula: "P(A|B) = P(B|A) × P(A) / P(B)",
+    plainEnglish:
+      "The probability of a breakout, given a volume spike, equals the probability of seeing that volume spike during real breakouts, multiplied by the base rate of breakouts, divided by how often volume spikes happen in general.",
+    howToUse: [
+      "Start with a base rate (prior). For most stocks, the probability of a true upside breakout on any given day is around 20–30%.",
+      "Collect signal data. How often does a volume spike of 50%+ above average accompany a real breakout? Historical research suggests roughly 60–70%.",
+      "Plug in the numbers. If you see a volume spike today, update your probability. A stock that normally has a 25% breakout probability might jump to 55–65% after a large volume day.",
+      "Set a threshold. Screen for stocks where the Bayes posterior probability exceeds 60%. These are your highest-conviction candidates.",
+      "Combine signals. Each additional confirming signal (RSI, news catalyst, price action) raises the posterior further. Bayes lets you stack signals mathematically.",
+    ],
+    ruleOfThumb: "Posterior probability > 60% → Include in watch list. Below 40% → Ignore. Between 40–60% → Monitor only.",
+    greenSignal: "Posterior prob > 60%",
+    redFlag: "Posterior prob < 40%",
+  },
+  {
+    id: "gbm",
+    name: "Geometric Brownian Motion (GBM)",
+    tagline: "Where Could the Stock Price Go?",
+    formula: "dS = μS dt + σS dW",
+    plainEnglish:
+      "S is current price, μ is annualized drift (expected return), σ is annualized volatility, dt is a small time step, dW is random noise. Over a full period this becomes a log-normal price distribution.",
+    howToUse: [
+      "Calculate drift (μ). Use the stock's 1-year price return as the annualized drift. A stock that returned 20% last year has μ = 0.20.",
+      "Calculate volatility (σ). Compute the standard deviation of daily log-returns, then multiply by √252. A stock moving 1.5% daily has σ ≈ 24%.",
+      "Project a price range. The 90th percentile upside in 1 month uses μ, σ, and time. The 10th percentile downside uses −1.28 in the Z term.",
+      "Screen for asymmetry. Only buy stocks where the 90th percentile upside is at least twice the 10th percentile downside.",
+      "Flag dangerous stocks. If the 10th percentile price is more than 20% below the current price, require extra confirmation before entering.",
+    ],
+    ruleOfThumb: "90th percentile price > Current price × 1.15 in 1 month → Strong GBM tailwind. Upside:Downside ratio < 1.5 → Skip the trade.",
+    greenSignal: "Upside 2× downside",
+    redFlag: "10th pct < −20%",
+  },
+  {
+    id: "ito",
+    name: "Itô's Lemma",
+    tagline: "How Much Does an Option Actually Move?",
+    formula: "df = (∂f/∂t + μS∂f/∂S + ½σ²S²∂²f/∂S²)dt + σS(∂f/∂S)dW",
+    plainEnglish:
+      "The key practical term is ½σ²S²∂²f/∂S², the convexity adjustment — the extra value an option gains from price volatility, regardless of direction.",
+    howToUse: [
+      "Delta (∂f/∂S) tells you how much the option moves per $1 in the stock. Gamma (∂²f/∂S²) tells you how quickly Delta changes.",
+      "Screen for high-gamma situations. Before earnings, options with Gamma > 0.05 mean Delta shifts fast.",
+      "Use Vega for volatility plays. Vega measures gain per 1% rise in implied volatility. Before known events, high-Vega options bet on volatility expansion.",
+      "Watch Theta decay. Screen out options with Theta > 0.05 per day unless the expected move justifies it.",
+      "If IV is rising, the Itô convexity term grows — options become more valuable even without a price move. Screen for rising IV not yet fully priced in.",
+    ],
+    ruleOfThumb: "Gamma > 0.05 + upcoming catalyst → Consider long straddle. Vega > 0.15 + rising IV → Buy calls or puts before the move. Theta > 0.05/day → Avoid long options unless move is imminent.",
+    greenSignal: "Gamma > 0.05 + catalyst",
+    redFlag: "Theta > 0.05/day",
+  },
+  {
+    id: "blackscholes",
+    name: "Black-Scholes",
+    tagline: "Is the Option Overpriced or Underpriced?",
+    formula: "C = S·N(d₁) − Ke⁻ʳᵀ·N(d₂)",
+    plainEnglish:
+      "C is call price, S is stock price, K is strike, r is risk-free rate, T is time to expiry in years, N() is the normal distribution.",
+    howToUse: [
+      "Compute IV Rank. IV Rank = (Current IV − 52W Low) / (52W High − 52W Low). 0–100 tells you whether options are cheap or expensive.",
+      "IV Rank > 70 (expensive options). Sell covered calls or cash-secured puts to collect premium.",
+      "IV Rank < 20 (cheap options). Buy calls or puts ahead of a known catalyst. You are getting options below fair value.",
+      "Implied move to expiry ≈ σ × √T. If the stock prices in a 10% move but you expect 20%, options are mispriced in your favor.",
+      "Compare theoretical Black-Scholes price to market ask. If market is >15% above theoretical with no obvious reason, the option is overpriced — selling opportunity.",
+    ],
+    ruleOfThumb: "IV Rank > 70 → Sell premium (covered calls, puts). IV Rank < 20 before catalyst → Buy options. Market price > Black-Scholes by 15%+ → Selling edge exists.",
+    greenSignal: "IV Rank < 20 (buy) or > 70 (sell)",
+    redFlag: "IV Rank 40–60 = neutral",
+  },
+  {
+    id: "markowitz",
+    name: "Markowitz Portfolio Variance",
+    tagline: "Is This Stock Worth Adding to Your Portfolio?",
+    formula: "σ²ₚ = wᵀΣw",
+    plainEnglish:
+      "Portfolio variance; w is the vector of weights, Σ is the covariance matrix. Diversification reduces variance beyond what any single stock variance predicts.",
+    howToUse: [
+      "Sharpe Ratio = (Expected Return − Risk-Free Rate) / Standard Deviation. Screen for Sharpe > 1.0 (excellent if > 1.5).",
+      "Check correlation to your portfolio. Correlation below 0.3 = true diversifier. Above 0.7 = concentrated risk.",
+      "Optimal weight from the formula: max weight per position before marginal variance exceeds marginal return is often 5–15%.",
+      "Screen for the efficient frontier. Stocks on the frontier (highest Sharpe for their volatility) are worth holding.",
+      "Reject redundant positions. If correlation > 0.8 with something you own and lower Sharpe, hold zero weight.",
+    ],
+    ruleOfThumb: "Sharpe > 1.0 → Quality candidate. Correlation to portfolio < 0.3 → Strong diversification. Optimal weight = 0% → Skip. Sharpe > 1.5 and correlation < 0.5 → Priority addition.",
+    greenSignal: "Sharpe > 1.0, Corr < 0.3",
+    redFlag: "Corr > 0.8 to existing holdings",
+  },
+  {
+    id: "montecarlo",
+    name: "Monte Carlo Pricing",
+    tagline: "What Are the Realistic Outcomes?",
+    formula: "Sᵀ = S₀ · exp((r − σ²/2)T + σ√T·Z)",
+    plainEnglish:
+      "Z is a random draw from a standard normal. Running this 10,000 times gives 10,000 possible ending prices — the distribution is the risk profile.",
+    howToUse: [
+      "Generate 10,000 price paths using the stock's historical μ and σ.",
+      "Probability of profit: % of paths ending above your target. If only 20% reach target, odds are poor.",
+      "VaR: sort ending prices; 5th percentile = 95% VaR (worst-case in 95 of 100 scenarios). Screen out trades where VaR exceeds max acceptable loss.",
+      "Compare P(+20% gain) to P(−20% loss). Good trade: P(+20%) at least 1.5× P(−20%).",
+      "Use Monte Carlo to price options: average of max(S_T − K, 0) discounted; compare to Black-Scholes as a sanity check.",
+    ],
+    ruleOfThumb: "P(+20% gain) > 2 × P(−20% loss) → Strong risk-reward. VaR(95%) > your max loss tolerance → Reduce size or skip. Probability of hitting target < 30% → Lottery ticket, not investment.",
+    greenSignal: "P(+20%) > 2× P(−20%)",
+    redFlag: "VaR exceeds risk tolerance",
+  },
+] as const;
+
+const SCREENING_SUMMARY = [
+  { formula: "Bayes' Theorem", question: "Is this signal real?", green: "Posterior prob > 60%", red: "Posterior prob < 40%" },
+  { formula: "GBM", question: "Where can price go?", green: "Upside 2× downside", red: "10th pct < −20%" },
+  { formula: "Itô's Lemma", question: "How do options behave?", green: "Gamma > 0.05 + catalyst", red: "Theta > 0.05/day" },
+  { formula: "Black-Scholes", question: "Are options mispriced?", green: "IV Rank < 20 (buy) or > 70 (sell)", red: "IV Rank 40–60 = neutral" },
+  { formula: "Markowitz", question: "Is it worth adding?", green: "Sharpe > 1.0, Corr < 0.3", red: "Corr > 0.8 to existing holdings" },
+  { formula: "Monte Carlo", question: "What are the real odds?", green: "P(+20%) > 2× P(−20%)", red: "VaR exceeds risk tolerance" },
+];
+
+function QuantitativeScreeningGuide() {
+  const [expandedId, setExpandedId] = useState<string | null>("bayes");
+
+  return (
+    <div className="mt-10 rounded-xl border border-cyan-800/50 bg-slate-900/40 p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold tracking-tight text-slate-100">
+          Quantitative Stock Screening
+        </h2>
+        <span className="text-xs text-cyan-300/90">
+          Bayes · GBM · Itô · Black-Scholes · Markowitz · Monte Carlo
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-slate-400">
+        A plain-English guide to 6 formulas and how to use them. Each one answers a specific question before you place a trade. You do not need a math degree — understand what question each formula answers and let the numbers do the work.
+      </p>
+
+      <div className="mt-4 space-y-2">
+        {SCREENING_FORMULAS.map((f) => {
+          const isOpen = expandedId === f.id;
+          return (
+            <div
+              key={f.id}
+              className="rounded-lg border border-slate-700/60 bg-slate-950/50 overflow-hidden"
+            >
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-800/40 transition-colors"
+                onClick={() => setExpandedId(isOpen ? null : f.id)}
+              >
+                <span className="font-semibold text-cyan-200">{f.name}</span>
+                <span className="text-xs text-slate-500 truncate max-w-[50%]">{f.tagline}</span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className={clsx("h-4 w-4 flex-shrink-0 text-slate-500 transition-transform", isOpen && "rotate-180")}
+                >
+                  <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                </svg>
+              </button>
+              {isOpen && (
+                <div className="border-t border-slate-700/60 px-4 py-3 space-y-3 text-sm">
+                  <p className="text-slate-300">{f.plainEnglish}</p>
+                  <div className="rounded bg-slate-900/80 px-3 py-2 font-mono text-xs text-cyan-200/90 break-all">
+                    {f.formula}
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">How to use it for screening</div>
+                    <ul className="list-disc list-inside space-y-1 text-slate-400 text-xs">
+                      {f.howToUse.map((item, i) => (
+                        <li key={i}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-300">
+                      Green: {f.greenSignal}
+                    </span>
+                    <span className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300">
+                      Red: {f.redFlag}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 italic">Rule of thumb: {f.ruleOfThumb}</p>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-5">
+        <h3 className="text-sm font-semibold text-slate-200 mb-2">6-Formula Screening Checklist</h3>
+        <p className="text-xs text-slate-500 mb-3">A stock that passes 4+ of these checks is a high-conviction candidate.</p>
+        <div className="overflow-x-auto rounded-lg border border-slate-700/60">
+          <table className="w-full min-w-[600px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-700 bg-slate-800/50">
+                <th className="px-3 py-2 font-semibold text-slate-300">Formula</th>
+                <th className="px-3 py-2 font-semibold text-slate-300">Question</th>
+                <th className="px-3 py-2 font-semibold text-emerald-400/90">Green Signal</th>
+                <th className="px-3 py-2 font-semibold text-rose-400/90">Red Flag</th>
+              </tr>
+            </thead>
+            <tbody>
+              {SCREENING_SUMMARY.map((row) => (
+                <tr key={row.formula} className="border-b border-slate-800/80 hover:bg-slate-800/30">
+                  <td className="px-3 py-2 font-medium text-cyan-200/90">{row.formula}</td>
+                  <td className="px-3 py-2 text-slate-400">{row.question}</td>
+                  <td className="px-3 py-2 text-emerald-300/90">{row.green}</td>
+                  <td className="px-3 py-2 text-rose-300/90">{row.red}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-lg border border-amber-500/20 bg-amber-950/10 p-4">
+        <h3 className="text-sm font-semibold text-amber-200 mb-2">How to Put It All Together</h3>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          Run a stock through all six checks in sequence: (1) Bayes — confirm a signal exists. (2) GBM — project price range and confirm risk-reward is asymmetric. (3) Itô — if trading options, check Gamma and Vega. (4) Black-Scholes — see if options are cheap or expensive. (5) Markowitz — confirm the stock improves your portfolio. (6) Monte Carlo — get the probability distribution and VaR before sizing. A stock that passes all six is rare and usually worth acting on. Failing three or more means pass regardless of the story. The formulas remove emotion from the process.
+        </p>
       </div>
     </div>
   );
