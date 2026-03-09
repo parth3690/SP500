@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import clsx from "clsx";
 
 import { fetchMovers, fetchCrossovers, fetchOversold, fetchOverbought, fetchDailyOversold, fetchDailyOverbought, apiBaseUrl } from "@/lib/api";
 import { addDays, toLocalISODate, startOfYear } from "@/lib/date";
+import { getOptionSuggestionShort } from "@/lib/optionSuggestions";
 import type { MoversResponse, MoverRow, CrossoversResponse, OversoldResponse, OverboughtResponse } from "@/lib/types";
 
 const MoversTable = dynamic(() => import("@/components/MoversTable"), { ssr: false });
@@ -27,6 +29,10 @@ const presetToDays: Record<Exclude<Preset, "custom" | "ytd">, number> = {
 function formatPct(v: number): string {
   const sign = v > 0 ? "+" : "";
   return `${sign}${v.toFixed(2)}%`;
+}
+
+function getErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : "Unknown error";
 }
 
 export default function Dashboard() {
@@ -55,6 +61,11 @@ export default function Dashboard() {
   const [dailyOverboughtLoading, setDailyOverboughtLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [leapsWeeklyExpanded, setLeapsWeeklyExpanded] = useState(false);
+  const [leapsDailyExpanded, setLeapsDailyExpanded] = useState(false);
+  const [leapsWeeklyOverboughtExpanded, setLeapsWeeklyOverboughtExpanded] = useState(false);
+  const [leapsDailyOverboughtExpanded, setLeapsDailyOverboughtExpanded] = useState(false);
+
   const intervalRef = useRef<number | null>(null);
 
   const includeAll = true;
@@ -78,11 +89,12 @@ export default function Dashboard() {
         end,
         limit,
         includeAll,
-        refresh: opts?.refresh
+        refresh: opts?.refresh === true,
       });
       setData(payload);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unknown error");
+      setData(null);
+      setError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -91,10 +103,11 @@ export default function Dashboard() {
   const runCrossoverFetch = async (opts?: { refresh?: boolean }) => {
     setCrossoverLoading(true);
     try {
-      const payload = await fetchCrossovers({ threshold: 2.0, refresh: opts?.refresh });
+      const payload = await fetchCrossovers({ threshold: 2.0, refresh: opts?.refresh === true });
       setCrossoverData(payload);
     } catch (e) {
-      console.error("Crossover fetch failed:", e);
+      setCrossoverData(null);
+      console.error("Crossover fetch failed:", getErrorMessage(e));
     } finally {
       setCrossoverLoading(false);
     }
@@ -103,10 +116,11 @@ export default function Dashboard() {
   const runOversoldFetch = async (opts?: { refresh?: boolean }) => {
     setOversoldLoading(true);
     try {
-      const payload = await fetchOversold({ threshold: 30, refresh: opts?.refresh });
+      const payload = await fetchOversold({ threshold: 30, refresh: opts?.refresh === true });
       setOversoldData(payload);
     } catch (e) {
-      console.error("RSI oversold fetch failed:", e);
+      setOversoldData(null);
+      console.error("RSI oversold fetch failed:", getErrorMessage(e));
     } finally {
       setOversoldLoading(false);
     }
@@ -115,10 +129,11 @@ export default function Dashboard() {
   const runOverboughtFetch = async (opts?: { refresh?: boolean }) => {
     setOverboughtLoading(true);
     try {
-      const payload = await fetchOverbought({ threshold: 70, refresh: opts?.refresh });
+      const payload = await fetchOverbought({ threshold: 70, refresh: opts?.refresh === true });
       setOverboughtData(payload);
     } catch (e) {
-      console.error("RSI overbought fetch failed:", e);
+      setOverboughtData(null);
+      console.error("RSI overbought fetch failed:", getErrorMessage(e));
     } finally {
       setOverboughtLoading(false);
     }
@@ -127,10 +142,11 @@ export default function Dashboard() {
   const runDailyOversoldFetch = async (opts?: { refresh?: boolean }) => {
     setDailyOversoldLoading(true);
     try {
-      const payload = await fetchDailyOversold({ threshold: 30, refresh: opts?.refresh });
+      const payload = await fetchDailyOversold({ threshold: 30, refresh: opts?.refresh === true });
       setDailyOversoldData(payload);
     } catch (e) {
-      console.error("Daily RSI oversold fetch failed:", e);
+      setDailyOversoldData(null);
+      console.error("Daily RSI oversold fetch failed:", getErrorMessage(e));
     } finally {
       setDailyOversoldLoading(false);
     }
@@ -139,10 +155,11 @@ export default function Dashboard() {
   const runDailyOverboughtFetch = async (opts?: { refresh?: boolean }) => {
     setDailyOverboughtLoading(true);
     try {
-      const payload = await fetchDailyOverbought({ threshold: 70, refresh: opts?.refresh });
+      const payload = await fetchDailyOverbought({ threshold: 70, refresh: opts?.refresh === true });
       setDailyOverboughtData(payload);
     } catch (e) {
-      console.error("Daily RSI overbought fetch failed:", e);
+      setDailyOverboughtData(null);
+      console.error("Daily RSI overbought fetch failed:", getErrorMessage(e));
     } finally {
       setDailyOverboughtLoading(false);
     }
@@ -204,6 +221,18 @@ export default function Dashboard() {
     () => (dailyOversoldData?.stocks?.length ?? 0) > 0,
     [dailyOversoldData],
   );
+
+  const hasWeeklyOverbought = useMemo(
+    () => (overboughtData?.stocks?.length ?? 0) > 0,
+    [overboughtData],
+  );
+
+  const hasDailyOverbought = useMemo(
+    () => (dailyOverboughtData?.stocks?.length ?? 0) > 0,
+    [dailyOverboughtData],
+  );
+
+  const hasAnyRadarCandidates = hasWeeklyLeapsCandidates || hasDailyLeapsCandidates || hasWeeklyOverbought || hasDailyOverbought;
 
   return (
     <div className="mx-auto max-w-[1600px] px-4 py-8">
@@ -392,14 +421,13 @@ export default function Dashboard() {
                       LEAPS setup radar
                     </div>
                     <p className="mt-1 text-xs text-emerald-200/80">
-                      Highlights when the market scan finds oversold candidates that may be worth a
-                      deeper LEAPS checklist review.
+                      Oversold and overbought scans — expand each list for tickers worth a deeper LEAPS checklist review.
                     </p>
                   </div>
                   <div
                     className={clsx(
                       "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium",
-                      hasWeeklyLeapsCandidates || hasDailyLeapsCandidates
+                      hasAnyRadarCandidates
                         ? "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/60"
                         : "bg-slate-800 text-slate-300 ring-1 ring-slate-700",
                     )}
@@ -407,47 +435,249 @@ export default function Dashboard() {
                     <span
                       className={clsx(
                         "h-1.5 w-1.5 rounded-full",
-                        hasWeeklyLeapsCandidates || hasDailyLeapsCandidates
+                        hasAnyRadarCandidates
                           ? "bg-emerald-400 animate-pulse"
                           : "bg-slate-500",
                       )}
                     />
-                    {hasWeeklyLeapsCandidates || hasDailyLeapsCandidates
+                    {hasAnyRadarCandidates
                       ? "Candidates detected"
                       : "No candidates"}
                   </div>
                 </div>
 
-                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-emerald-100/80">
-                  <span
+                <div className="mt-2 space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => setLeapsWeeklyExpanded((v) => !v)}
                     className={clsx(
-                      "inline-flex items-center gap-1 rounded-full border px-2 py-1",
+                      "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
                       hasWeeklyLeapsCandidates
-                        ? "border-emerald-400/70 bg-emerald-500/10"
-                        : "border-slate-700 bg-slate-900/40 text-slate-300",
+                        ? "border-emerald-400/70 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20"
+                        : "border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60",
                     )}
                   >
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    Weekly RSI oversold
-                    <span className="font-semibold">
-                      {(oversoldData?.stocks?.length ?? 0).toLocaleString()}
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      Weekly RSI oversold
+                      <span className="font-semibold">
+                        {(oversoldData?.stocks?.length ?? 0).toLocaleString()}
+                      </span>
                     </span>
-                  </span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className={clsx("h-3.5 w-3.5 flex-shrink-0 transition-transform", leapsWeeklyExpanded && "rotate-180")}
+                    >
+                      <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  {leapsWeeklyExpanded && (
+                    <div className="max-h-40 overflow-y-auto rounded-md border border-slate-700/60 bg-slate-950/60 py-1">
+                      {(oversoldData?.stocks?.length ?? 0) > 0 ? (
+                        <ul className="space-y-0.5 px-2 text-[11px]">
+                          {oversoldData!.stocks.map((s) => {
+                            const suggestion = getOptionSuggestionShort("weekly_oversold", s.weeklyRSI, s.currentPrice);
+                            return (
+                              <li key={s.ticker} className="rounded px-1.5 py-1 hover:bg-slate-800/40">
+                                <Link
+                                  href={`/research/${encodeURIComponent(s.ticker)}`}
+                                  className="flex items-center justify-between gap-2 text-emerald-200 hover:text-emerald-100"
+                                >
+                                  <span className="font-medium">{s.ticker}</span>
+                                  {s.weeklyRSI != null && (
+                                    <span className="text-slate-400">RSI {s.weeklyRSI.toFixed(1)}</span>
+                                  )}
+                                </Link>
+                                {suggestion && (
+                                  <p className="mt-0.5 pl-0.5 text-[10px] text-slate-500 leading-tight">
+                                    {suggestion}
+                                  </p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="px-2 py-2 text-[11px] text-slate-500">No weekly oversold candidates.</p>
+                      )}
+                    </div>
+                  )}
 
-                  <span
+                  <button
+                    type="button"
+                    onClick={() => setLeapsDailyExpanded((v) => !v)}
                     className={clsx(
-                      "inline-flex items-center gap-1 rounded-full border px-2 py-1",
+                      "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
                       hasDailyLeapsCandidates
-                        ? "border-emerald-400/70 bg-emerald-500/10"
-                        : "border-slate-700 bg-slate-900/40 text-slate-300",
+                        ? "border-emerald-400/70 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20"
+                        : "border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60",
                     )}
                   >
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    Daily RSI oversold
-                    <span className="font-semibold">
-                      {(dailyOversoldData?.stocks?.length ?? 0).toLocaleString()}
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      Daily RSI oversold
+                      <span className="font-semibold">
+                        {(dailyOversoldData?.stocks?.length ?? 0).toLocaleString()}
+                      </span>
                     </span>
-                  </span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className={clsx("h-3.5 w-3.5 flex-shrink-0 transition-transform", leapsDailyExpanded && "rotate-180")}
+                    >
+                      <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  {leapsDailyExpanded && (
+                    <div className="max-h-40 overflow-y-auto rounded-md border border-slate-700/60 bg-slate-950/60 py-1">
+                      {(dailyOversoldData?.stocks?.length ?? 0) > 0 ? (
+                        <ul className="space-y-0.5 px-2 text-[11px]">
+                          {dailyOversoldData!.stocks.map((s) => {
+                            const suggestion = getOptionSuggestionShort("daily_oversold", s.dailyRSI, s.currentPrice);
+                            return (
+                              <li key={s.ticker} className="rounded px-1.5 py-1 hover:bg-slate-800/40">
+                                <Link
+                                  href={`/research/${encodeURIComponent(s.ticker)}`}
+                                  className="flex items-center justify-between gap-2 text-emerald-200 hover:text-emerald-100"
+                                >
+                                  <span className="font-medium">{s.ticker}</span>
+                                  {s.dailyRSI != null && (
+                                    <span className="text-slate-400">RSI {s.dailyRSI.toFixed(1)}</span>
+                                  )}
+                                </Link>
+                                {suggestion && (
+                                  <p className="mt-0.5 pl-0.5 text-[10px] text-slate-500 leading-tight">
+                                    {suggestion}
+                                  </p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="px-2 py-2 text-[11px] text-slate-500">No daily oversold candidates.</p>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setLeapsWeeklyOverboughtExpanded((v) => !v)}
+                    className={clsx(
+                      "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+                      hasWeeklyOverbought
+                        ? "border-rose-400/70 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+                        : "border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60",
+                    )}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                      Weekly RSI overbought
+                      <span className="font-semibold">
+                        {(overboughtData?.stocks?.length ?? 0).toLocaleString()}
+                      </span>
+                    </span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className={clsx("h-3.5 w-3.5 flex-shrink-0 transition-transform", leapsWeeklyOverboughtExpanded && "rotate-180")}
+                    >
+                      <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  {leapsWeeklyOverboughtExpanded && (
+                    <div className="max-h-40 overflow-y-auto rounded-md border border-slate-700/60 bg-slate-950/60 py-1">
+                      {(overboughtData?.stocks?.length ?? 0) > 0 ? (
+                        <ul className="space-y-0.5 px-2 text-[11px]">
+                          {overboughtData!.stocks.map((s) => {
+                            const suggestion = getOptionSuggestionShort("weekly_overbought", s.weeklyRSI, s.currentPrice);
+                            return (
+                              <li key={s.ticker} className="rounded px-1.5 py-1 hover:bg-slate-800/40">
+                                <Link
+                                  href={`/research/${encodeURIComponent(s.ticker)}`}
+                                  className="flex items-center justify-between gap-2 text-rose-200 hover:text-rose-100"
+                                >
+                                  <span className="font-medium">{s.ticker}</span>
+                                  {s.weeklyRSI != null && (
+                                    <span className="text-slate-400">RSI {s.weeklyRSI.toFixed(1)}</span>
+                                  )}
+                                </Link>
+                                {suggestion && (
+                                  <p className="mt-0.5 pl-0.5 text-[10px] text-slate-500 leading-tight">
+                                    {suggestion}
+                                  </p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="px-2 py-2 text-[11px] text-slate-500">No weekly overbought candidates.</p>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setLeapsDailyOverboughtExpanded((v) => !v)}
+                    className={clsx(
+                      "flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+                      hasDailyOverbought
+                        ? "border-rose-400/70 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+                        : "border-slate-700 bg-slate-900/40 text-slate-300 hover:bg-slate-800/60",
+                    )}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                      Daily RSI overbought
+                      <span className="font-semibold">
+                        {(dailyOverboughtData?.stocks?.length ?? 0).toLocaleString()}
+                      </span>
+                    </span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className={clsx("h-3.5 w-3.5 flex-shrink-0 transition-transform", leapsDailyOverboughtExpanded && "rotate-180")}
+                    >
+                      <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                  {leapsDailyOverboughtExpanded && (
+                    <div className="max-h-40 overflow-y-auto rounded-md border border-slate-700/60 bg-slate-950/60 py-1">
+                      {(dailyOverboughtData?.stocks?.length ?? 0) > 0 ? (
+                        <ul className="space-y-0.5 px-2 text-[11px]">
+                          {dailyOverboughtData!.stocks.map((s) => {
+                            const suggestion = getOptionSuggestionShort("daily_overbought", s.dailyRSI, s.currentPrice);
+                            return (
+                              <li key={s.ticker} className="rounded px-1.5 py-1 hover:bg-slate-800/40">
+                                <Link
+                                  href={`/research/${encodeURIComponent(s.ticker)}`}
+                                  className="flex items-center justify-between gap-2 text-rose-200 hover:text-rose-100"
+                                >
+                                  <span className="font-medium">{s.ticker}</span>
+                                  {s.dailyRSI != null && (
+                                    <span className="text-slate-400">RSI {s.dailyRSI.toFixed(1)}</span>
+                                  )}
+                                </Link>
+                                {suggestion && (
+                                  <p className="mt-0.5 pl-0.5 text-[10px] text-slate-500 leading-tight">
+                                    {suggestion}
+                                  </p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="px-2 py-2 text-[11px] text-slate-500">No daily overbought candidates.</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

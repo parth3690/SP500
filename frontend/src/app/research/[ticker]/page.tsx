@@ -7,6 +7,7 @@ import Script from "next/script";
 import clsx from "clsx";
 
 import { fetchResearch } from "@/lib/api";
+import { getOptionSuggestion } from "@/lib/optionSuggestions";
 import type { ResearchData } from "@/lib/types";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -112,18 +113,24 @@ export default function ResearchPage() {
 
   // ── Data fetcher ────────────────────────────────────────────────────────
   const loadData = useCallback(
-    (start: string, end: string, refresh?: boolean) => {
+    async (start: string, end: string, refresh?: boolean) => {
       setLoading(true);
       setError(null);
-      fetchResearch(ticker, { start, end, refresh })
-        .then((res) => {
-          setData(res);
-          // Sync actual returned range back into state
-          if (res.dateRangeStart) setStartDate(res.dateRangeStart);
-          if (res.dateRangeEnd) setEndDate(res.dateRangeEnd);
-        })
-        .catch((e) => setError(e instanceof Error ? e.message : "Failed to load data"))
-        .finally(() => setLoading(false));
+      try {
+        const res = await fetchResearch(ticker, {
+          start,
+          end,
+          refresh: refresh === true,
+        });
+        setData(res);
+        if (res.dateRangeStart) setStartDate(res.dateRangeStart);
+        if (res.dateRangeEnd) setEndDate(res.dateRangeEnd);
+      } catch (e) {
+        setData(null);
+        setError(e instanceof Error ? e.message : "Failed to load data");
+      } finally {
+        setLoading(false);
+      }
     },
     [ticker]
   );
@@ -672,6 +679,48 @@ export default function ResearchPage() {
           valueClass={data.latestRSI != null ? (data.latestRSI > 70 ? "text-rose-400" : data.latestRSI < 30 ? "text-emerald-400" : "text-slate-100") : undefined}
         />
       </div>
+
+      {/* ── Option suggestion (RSI-based) ── */}
+      {(() => {
+        const rsi = data.latestRSI;
+        const context = rsi != null && rsi <= 35 ? "daily_oversold" : rsi != null && rsi >= 65 ? "daily_overbought" : null;
+        const suggestion = context ? getOptionSuggestion(context, rsi!, data.currentPrice) : null;
+        if (!suggestion) return null;
+        const isOversold = context === "daily_oversold";
+        return (
+          <div className={clsx(
+            "mt-5 rounded-xl border p-4",
+            isOversold ? "border-emerald-700/50 bg-emerald-950/20" : "border-rose-700/50 bg-rose-950/20"
+          )}>
+            <h2 className="text-sm font-semibold text-slate-200 mb-2">
+              Option suggestion (RSI-based)
+            </h2>
+            <p className="text-xs text-slate-400 mb-3">
+              Strike and expiry ideas where probability of profit is higher, based on current RSI ({data.latestRSI != null ? fmt(data.latestRSI) : "N/A"}).
+            </p>
+            <div className="grid gap-2 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">Strategy</span>
+                <span className={clsx("font-medium", isOversold ? "text-emerald-300" : "text-rose-300")}>
+                  {suggestion.strategy}
+                </span>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Strike</div>
+                <p className="text-slate-200 text-xs">{suggestion.strikeSuggestion}</p>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Expiry</div>
+                <p className="text-slate-200 text-xs">{suggestion.expirySuggestion}</p>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Rationale</div>
+                <p className="text-slate-400 text-xs leading-relaxed">{suggestion.rationale}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Crossover Status ── */}
       <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/30 p-4">
