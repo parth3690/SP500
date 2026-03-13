@@ -7,6 +7,7 @@ import clsx from "clsx";
 
 import { fetchMovers, fetchCrossovers, fetchOversold, fetchOverbought, fetchDailyOversold, fetchDailyOverbought, apiBaseUrl } from "@/lib/api";
 import { addDays, toLocalISODate, startOfYear } from "@/lib/date";
+import { formatPct } from "@/lib/format";
 import { getOptionSuggestionShort } from "@/lib/optionSuggestions";
 import type { MoversResponse, MoverRow, CrossoversResponse, OversoldResponse, OverboughtResponse } from "@/lib/types";
 
@@ -25,11 +26,6 @@ const presetToDays: Record<Exclude<Preset, "custom" | "ytd">, number> = {
   "1m": 30,
   "3m": 90
 };
-
-function formatPct(v: number): string {
-  const sign = v > 0 ? "+" : "";
-  return `${sign}${v.toFixed(2)}%`;
-}
 
 function getErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : "Unknown error";

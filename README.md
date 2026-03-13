@@ -4,14 +4,20 @@ Full-stack web app for S&P 500 analysis featuring real-time market data, technic
 
 ## Features
 
-- **Dashboard** -- Top gainers/losers with filtering, search, sorting, CSV export, charts, and a full heatmap
-- **Golden/Death Cross Detection** -- Highlights stocks where the 50-DMA and 200-DMA are converging
-- **Deep Research Page** -- Click any ticker for comprehensive single-stock analysis:
+- **Dashboard**
+  - Top gainers/losers with filtering, search, sorting, CSV export, charts, and a full heatmap
+  - LEAPS radar: weekly/daily oversold & overbought lists with compact option suggestions for each ticker
+- **Golden/Death Cross Detection**
+  - Highlights stocks where the 50-DMA and 200-DMA are converging or crossing, with a dedicated crossovers table
+- **Deep Research Page (any ticker, not just S&P 500)**
   - Interactive candlestick charts (Plotly.js) with Bollinger Bands, Fibonacci retracements
-  - Moving Averages (50-DMA, 200-DMA), RSI, MACD
+  - Moving Averages (50-DMA, 200-DMA), RSI, MACD and crossover status
   - Editable date range (1M / 3M / 6M / 1Y / 2Y / 5Y presets or custom)
   - 9 Quantitative Trading Strategies with BUY/SELL/NEUTRAL signals and plain-English reasoning
   - Fundamental data (P/E ratios, market cap, beta, 52-week range)
+  - **Option suggestion card (RSI-based or factor-based)** – strategy, strike, expiry and rationale you can backtest
+  - **LEAPS suggestion card** – long-dated (12–18 month) call/put ideas using RSI when available, otherwise factor-based
+  - **Quantitative Stock Screening (6-formula checklist)** – Bayes, GBM, Itô, Black‑Scholes, Markowitz, Monte Carlo with pass/fail/review and a suggested next move
 
 ## Tech Stack
 
@@ -34,7 +40,13 @@ frontend/         Next.js dashboard
   src/
     app/          Pages (dashboard, research/[ticker])
     components/   UI components (tables, heatmap, charts)
-    lib/          API client, types
+    lib/
+      api.ts      Typed API client & fetch helpers
+      types.ts    Shared response types (mirrors backend models)
+      date.ts     Date utilities for ISO ranges and presets
+      format.ts   Centralized numeric/price/percent formatting
+      screening.ts  Shared GBM/Monte Carlo volatility pipeline
+      optionSuggestions.ts  RSI + factor-based option/LEAPS logic
 ```
 
 ## Quantitative Trading Strategies
@@ -173,13 +185,24 @@ Both auto-deploy on every `git push` to main.
 
 ---
 
-## How Data Works
+## How Data & Signals Work
 
 - **Constituents**: Scraped from Wikipedia's "List of S&P 500 companies"
 - **Ticker normalization**: Share classes like `BRK.B` are converted to Yahoo format (`BRK-B`)
 - **Prices**: Fetched from Yahoo Finance via `yfinance` in batched downloads
 - **Caching**: Constituents cached 24h, movers cached 15m, research cached per ticker+date range
-- **Indicators**: All computed server-side (SMA, EMA, RSI, MACD, Bollinger, Fibonacci, Stochastic, ADX, OBV)
+- **Indicators**:
+  - All standard indicators (SMA, EMA, RSI, MACD, Bollinger, Fibonacci, Stochastic, ADX, OBV) are computed server-side
+  - RSI for research and RSI scans share the same Wilder formula via a common `indicators.py` helper for consistency
+- **Quantitative Stock Screening**:
+  - Uses research OHLCV data to compute GBM and Monte Carlo once, then reuses that pipeline for:
+    - The 6-formula screening table (Bayes, GBM, Itô, Black‑Scholes, Markowitz, Monte Carlo)
+    - Factor-based option and LEAPS suggestions when RSI is missing or neutral
+  - Screening results also output a **Results summary** and a **Suggested next move** (bullish / bearish / review)
+- **Option & LEAPS Suggestions**:
+  - **RSI-based suggestions**: Daily/weekly RSI drives bullish (oversold) vs bearish (overbought) strategies, strike range, and expiry
+  - **Factor-based suggestions**: When RSI is missing/neutral, the app uses crossover signal, GBM, Monte Carlo, 52‑week range, and beta
+  - Both near-term and LEAPS suggestions include a **Backtest key** (e.g. `crossover:golden_cross · gbm:bullish · 52w:near_low`) so you can filter and analyze results offline
 
 ## Performance Notes
 
@@ -187,3 +210,4 @@ Both auto-deploy on every `git push` to main.
 - Movers results are cached per (start, end) for 15 minutes
 - Research results are cached per (ticker, start, end) with configurable TTL
 - Price downloads are batched to reduce Yahoo Finance throttling risk
+- GBM and Monte Carlo volatility signals are computed once per research payload and reused across the screening table and option/LEAPS suggestion logic

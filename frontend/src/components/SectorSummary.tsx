@@ -4,16 +4,10 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 
+import { formatMoney as fmtMoney, formatPct } from "@/lib/format";
 import type { SectorSummaryRow, MoverRow } from "@/lib/types";
 
-function formatPct(v: number): string {
-  const sign = v > 0 ? "+" : "";
-  return `${sign}${v.toFixed(2)}%`;
-}
-
-function formatMoney(v: number): string {
-  return v >= 1000 ? `$${v.toFixed(0)}` : v >= 100 ? `$${v.toFixed(2)}` : `$${v.toFixed(3)}`;
-}
+const formatMoney = (v: number) => `$${fmtMoney(v)}`;
 
 export default function SectorSummary({
   rows,

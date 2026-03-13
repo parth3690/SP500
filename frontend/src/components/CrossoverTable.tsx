@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 
+import { formatMoney, formatPct } from "@/lib/format";
 import type { CrossoverRow } from "@/lib/types";
 
 type SortKey = "ticker" | "companyName" | "sector" | "currentPrice" | "dma50" | "dma200" | "gapPct";
@@ -12,15 +13,6 @@ type SortDir = "asc" | "desc";
 function compare(a: unknown, b: unknown): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   return String(a).localeCompare(String(b));
-}
-
-function formatMoney(v: number): string {
-  return v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(2) : v.toFixed(3);
-}
-
-function formatPct(v: number): string {
-  const sign = v > 0 ? "+" : "";
-  return `${sign}${v.toFixed(2)}%`;
 }
 
 export default function CrossoverTable(props: {

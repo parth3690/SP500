@@ -10,7 +10,9 @@ from ..models import Constituent
 
 
 def _batch_rsi(prices: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    """Compute RSI for ALL columns at once using vectorized EWM (Wilder's)."""
+    """Compute RSI for ALL columns at once using vectorized EWM (Wilder's).
+    Same formula as indicators.compute_rsi_series (alpha=1/period, RS = avg_gain/avg_loss).
+    """
     delta = prices.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)

@@ -1,13 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Script from "next/script";
 import clsx from "clsx";
 
 import { fetchResearch } from "@/lib/api";
-import { getOptionSuggestion } from "@/lib/optionSuggestions";
+import {
+  getOptionSuggestion,
+  getLeapsSuggestion,
+  getFactorBasedSuggestion,
+  getFactorBasedLeapsSuggestion,
+  type FactorInputs,
+} from "@/lib/optionSuggestions";
+import { formatNumber, formatLarge as formatLargeMoney, formatVol } from "@/lib/format";
+import { toISODate, daysAgo } from "@/lib/date";
+import { getVolatilityAndPathSignals, type VolatilityPathSignals } from "@/lib/screening";
 import type { ResearchData } from "@/lib/types";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -19,25 +28,9 @@ declare global {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function fmt(v: number | null | undefined, decimals = 2): string {
-  if (v == null) return "N/A";
-  return v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-}
-
-function fmtLarge(v: number | null | undefined): string {
-  if (v == null) return "N/A";
-  if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
-  if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
-  if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  return `$${v.toLocaleString()}`;
-}
-
-function fmtVol(v: number): string {
-  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-  return v.toLocaleString();
-}
+const fmt = formatNumber;
+const fmtLarge = formatLargeMoney;
+const fmtVol = formatVol;
 
 const PLOTLY_DARK = {
   paper_bgcolor: "rgba(0,0,0,0)",
@@ -52,18 +45,6 @@ const PLOTLY_DARK = {
   xaxis: { gridcolor: "rgba(255,255,255,0.04)", zeroline: false },
   yaxis: { gridcolor: "rgba(255,255,255,0.04)", zeroline: false },
 };
-
-// ── Date helpers ─────────────────────────────────────────────────────────
-
-function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return toISODate(d);
-}
 
 const DATE_PRESETS: { label: string; days: number }[] = [
   { label: "1M", days: 30 },
@@ -459,6 +440,19 @@ export default function ResearchPage() {
   // ── Derived values ─────────────────────────────────────────────────────
 
   const isPositive = data.change >= 0;
+
+  // Prefer backend-provided latestRSI, but fall back to the most recent non-null
+  // value from the RSI indicator series so non-index tickers still get signals.
+  const rsiSeries = data.indicators.rsi ?? [];
+  let seriesLatestRsi: number | null = null;
+  for (let i = rsiSeries.length - 1; i >= 0; i -= 1) {
+    const v = rsiSeries[i];
+    if (v != null) {
+      seriesLatestRsi = v;
+      break;
+    }
+  }
+  const latestRsi = data.latestRSI ?? seriesLatestRsi;
   const crossoverLabel: Record<string, { text: string; color: string }> = {
     golden_cross: { text: "Golden Cross Active", color: "text-amber-300" },
     death_cross: { text: "Death Cross Active", color: "text-violet-300" },
@@ -467,6 +461,13 @@ export default function ResearchPage() {
     none: { text: "No Crossover Signal", color: "text-slate-400" },
   };
   const cs = crossoverLabel[data.crossover.signal] ?? crossoverLabel.none;
+
+  // Single computation for GBM/Monte Carlo (shared by factor inputs + screening).
+  const volatilitySignals = useMemo(() => {
+    if (!data?.ohlcv?.close) return null;
+    const validClose = data.ohlcv.close.filter((c): c is number => c != null);
+    return getVolatilityAndPathSignals(validClose, data.currentPrice);
+  }, [data]);
 
   // ── Render ─────────────────────────────────────────────────────────────
 
@@ -569,10 +570,15 @@ export default function ResearchPage() {
             {data.companyName}{data.sector ? ` · ${data.sector}` : ""}
           </p>
         </div>
-        <div className="flex items-baseline gap-3">
-          <span className="text-2xl font-bold text-slate-100">${fmt(data.currentPrice)}</span>
-          <span className={clsx("text-lg font-semibold", isPositive ? "text-emerald-400" : "text-rose-400")}>
-            {isPositive ? "+" : ""}{fmt(data.change)} ({isPositive ? "+" : ""}{fmt(data.changePct)}%)
+        <div className="flex flex-col items-start gap-0.5 text-right sm:items-end">
+          <div className="flex items-baseline gap-3">
+            <span className="text-2xl font-bold text-slate-100">${fmt(data.currentPrice)}</span>
+            <span className={clsx("text-lg font-semibold", isPositive ? "text-emerald-400" : "text-rose-400")}>
+              {isPositive ? "+" : ""}{fmt(data.change)} ({isPositive ? "+" : ""}{fmt(data.changePct)}%)
+            </span>
+          </div>
+          <span className="text-[11px] text-slate-500">
+            Last close for selected range · {data.dateRangeEnd}
           </span>
         </div>
       </header>
@@ -675,33 +681,66 @@ export default function ResearchPage() {
         <StatCard label="P/E (Trailing)" value={data.fundamentals.trailingPE != null ? fmt(data.fundamentals.trailingPE) : "N/A"} />
         <StatCard label="P/E (Forward)" value={data.fundamentals.forwardPE != null ? fmt(data.fundamentals.forwardPE) : "N/A"} />
         <StatCard label="Beta" value={data.fundamentals.beta != null ? fmt(data.fundamentals.beta) : "N/A"} />
-        <StatCard label="RSI (14)" value={data.latestRSI != null ? fmt(data.latestRSI) : "N/A"}
-          valueClass={data.latestRSI != null ? (data.latestRSI > 70 ? "text-rose-400" : data.latestRSI < 30 ? "text-emerald-400" : "text-slate-100") : undefined}
+        <StatCard
+          label="RSI (14)"
+          value={latestRsi != null ? fmt(latestRsi) : "N/A"}
+          valueClass={
+            latestRsi != null
+              ? latestRsi > 70
+                ? "text-rose-400"
+                : latestRsi < 30
+                  ? "text-emerald-400"
+                  : "text-slate-100"
+              : undefined
+          }
         />
       </div>
 
-      {/* ── Option suggestion (RSI-based) ── */}
+      {/* ── Option suggestion (RSI-based or factor-based) ── */}
       {(() => {
-        const rsi = data.latestRSI;
-        const context = rsi != null && rsi <= 35 ? "daily_oversold" : rsi != null && rsi >= 65 ? "daily_overbought" : null;
-        const suggestion = context ? getOptionSuggestion(context, rsi!, data.currentPrice) : null;
+        const rsi = latestRsi;
+        const context =
+          rsi != null && rsi <= 35
+            ? "daily_oversold"
+            : rsi != null && rsi >= 65
+              ? "daily_overbought"
+              : null;
+        const rsiSuggestion = context ? getOptionSuggestion(context, rsi!, data.currentPrice) : null;
+        const factorInputs = getFactorInputs(data, volatilitySignals);
+        const factorSuggestion = rsiSuggestion ? null : getFactorBasedSuggestion(factorInputs);
+        const suggestion = rsiSuggestion ?? factorSuggestion;
         if (!suggestion) return null;
-        const isOversold = context === "daily_oversold";
+        const isRsiBased = !!rsiSuggestion;
+        const isOversold = isRsiBased && context === "daily_oversold";
+        const factorsUsed = "factorsUsed" in suggestion ? (suggestion as { factorsUsed: string[] }).factorsUsed : null;
         return (
-          <div className={clsx(
-            "mt-5 rounded-xl border p-4",
-            isOversold ? "border-emerald-700/50 bg-emerald-950/20" : "border-rose-700/50 bg-rose-950/20"
-          )}>
+          <div
+            className={clsx(
+              "mt-5 rounded-xl border p-4",
+              isRsiBased
+                ? isOversold
+                  ? "border-emerald-700/50 bg-emerald-950/20"
+                  : "border-rose-700/50 bg-rose-950/20"
+                : "border-cyan-700/50 bg-cyan-950/20",
+            )}
+          >
             <h2 className="text-sm font-semibold text-slate-200 mb-2">
-              Option suggestion (RSI-based)
+              {isRsiBased ? "Option suggestion (RSI-based)" : "Option suggestion (factor-based)"}
             </h2>
             <p className="text-xs text-slate-400 mb-3">
-              Strike and expiry ideas where probability of profit is higher, based on current RSI ({data.latestRSI != null ? fmt(data.latestRSI) : "N/A"}).
+              {isRsiBased
+                ? `Strike and expiry ideas where probability of profit is higher, based on current RSI (${rsi != null ? fmt(rsi) : "N/A"}).`
+                : "No RSI signal; suggestion from crossover, GBM, Monte Carlo, 52w range. Use backtest key to filter in backtests."}
             </p>
             <div className="grid gap-2 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] uppercase tracking-wider text-slate-500">Strategy</span>
-                <span className={clsx("font-medium", isOversold ? "text-emerald-300" : "text-rose-300")}>
+                <span
+                  className={clsx(
+                    "font-medium",
+                    isRsiBased ? (isOversold ? "text-emerald-300" : "text-rose-300") : "text-cyan-300",
+                  )}
+                >
                   {suggestion.strategy}
                 </span>
               </div>
@@ -717,7 +756,82 @@ export default function ResearchPage() {
                 <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Rationale</div>
                 <p className="text-slate-400 text-xs leading-relaxed">{suggestion.rationale}</p>
               </div>
+              {factorsUsed && factorsUsed.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Backtest key</div>
+                  <p className="text-xs text-cyan-300/90 font-mono">
+                    {factorsUsed.join(" · ")}
+                  </p>
+                </div>
+              )}
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── LEAPS suggestion (always shown; RSI or factor-based; "No suggestions" only when neither) ── */}
+      {(() => {
+        const rsiLeaps = getLeapsSuggestion(latestRsi ?? null, data.currentPrice);
+        const factorInputs = getFactorInputs(data, volatilitySignals);
+        const factorLeaps = rsiLeaps ? null : getFactorBasedLeapsSuggestion(factorInputs);
+        const leaps = rsiLeaps ?? factorLeaps;
+        const isRsiBased = !!rsiLeaps;
+        const isOversold = isRsiBased && (latestRsi ?? 50) <= 35;
+        const factorsUsed = leaps && "factorsUsed" in leaps ? (leaps as { factorsUsed: string[] }).factorsUsed : null;
+        return (
+          <div
+            className={clsx(
+              "mt-4 rounded-xl border p-4",
+              leaps
+                ? isRsiBased
+                  ? isOversold
+                    ? "border-cyan-700/50 bg-cyan-950/20"
+                    : "border-amber-700/50 bg-amber-950/20"
+                  : "border-cyan-700/50 bg-cyan-950/20"
+                : "border-slate-700/50 bg-slate-900/30",
+            )}
+          >
+            <h2 className="text-sm font-semibold text-slate-200 mb-2">LEAPS suggestion</h2>
+            <p className="text-xs text-slate-400 mb-3">
+              Long-dated (12–18 mo) option ideas. Based on RSI when available; otherwise crossover, GBM, Monte Carlo, 52w. Use with the 9-condition LEAPS checklist.
+            </p>
+            {leaps ? (
+              <div className="grid gap-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-500">Strategy</span>
+                  <span
+                    className={clsx(
+                      "font-medium",
+                      isRsiBased ? (isOversold ? "text-cyan-300" : "text-amber-300") : "text-cyan-300",
+                    )}
+                  >
+                    {leaps.strategy}
+                  </span>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Strike</div>
+                  <p className="text-slate-200 text-xs">{leaps.strikeSuggestion}</p>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Expiry</div>
+                  <p className="text-slate-200 text-xs">{leaps.expirySuggestion}</p>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Rationale</div>
+                  <p className="text-slate-400 text-xs leading-relaxed">{leaps.rationale}</p>
+                </div>
+                {factorsUsed && factorsUsed.length > 0 && (
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Backtest key</div>
+                    <p className="text-xs text-cyan-300/90 font-mono">{factorsUsed.join(" · ")}</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500 italic">
+                No suggestions. RSI is neutral (35–65) and factor screen has no clear bullish/bearish tilt. Check back or use quantitative screening for next move.
+              </p>
+            )}
           </div>
         );
       })()}
@@ -836,7 +950,7 @@ export default function ResearchPage() {
       </div>
 
       {/* ── Quantitative Stock Screening Guide ── */}
-      <QuantitativeScreeningGuide />
+      <QuantitativeScreeningGuide researchData={data} volatilitySignals={volatilitySignals} />
 
       {/* Footer spacer */}
       <div className="h-12" />
@@ -971,230 +1085,200 @@ function StrategyCard({ strategy }: { strategy: ResearchData["strategies"][numbe
   );
 }
 
-// ── Quantitative Stock Screening Guide (6 formulas) ────────────────────────
+// ── Quantitative Stock Screening (6 formulas, compact + green/red) ─────────
 
-const SCREENING_FORMULAS = [
-  {
-    id: "bayes",
-    name: "Bayes' Theorem",
-    tagline: "How Likely Is This Signal to Be Real?",
-    formula: "P(A|B) = P(B|A) × P(A) / P(B)",
-    plainEnglish:
-      "The probability of a breakout, given a volume spike, equals the probability of seeing that volume spike during real breakouts, multiplied by the base rate of breakouts, divided by how often volume spikes happen in general.",
-    howToUse: [
-      "Start with a base rate (prior). For most stocks, the probability of a true upside breakout on any given day is around 20–30%.",
-      "Collect signal data. How often does a volume spike of 50%+ above average accompany a real breakout? Historical research suggests roughly 60–70%.",
-      "Plug in the numbers. If you see a volume spike today, update your probability. A stock that normally has a 25% breakout probability might jump to 55–65% after a large volume day.",
-      "Set a threshold. Screen for stocks where the Bayes posterior probability exceeds 60%. These are your highest-conviction candidates.",
-      "Combine signals. Each additional confirming signal (RSI, news catalyst, price action) raises the posterior further. Bayes lets you stack signals mathematically.",
-    ],
-    ruleOfThumb: "Posterior probability > 60% → Include in watch list. Below 40% → Ignore. Between 40–60% → Monitor only.",
-    greenSignal: "Posterior prob > 60%",
-    redFlag: "Posterior prob < 40%",
-  },
-  {
-    id: "gbm",
-    name: "Geometric Brownian Motion (GBM)",
-    tagline: "Where Could the Stock Price Go?",
-    formula: "dS = μS dt + σS dW",
-    plainEnglish:
-      "S is current price, μ is annualized drift (expected return), σ is annualized volatility, dt is a small time step, dW is random noise. Over a full period this becomes a log-normal price distribution.",
-    howToUse: [
-      "Calculate drift (μ). Use the stock's 1-year price return as the annualized drift. A stock that returned 20% last year has μ = 0.20.",
-      "Calculate volatility (σ). Compute the standard deviation of daily log-returns, then multiply by √252. A stock moving 1.5% daily has σ ≈ 24%.",
-      "Project a price range. The 90th percentile upside in 1 month uses μ, σ, and time. The 10th percentile downside uses −1.28 in the Z term.",
-      "Screen for asymmetry. Only buy stocks where the 90th percentile upside is at least twice the 10th percentile downside.",
-      "Flag dangerous stocks. If the 10th percentile price is more than 20% below the current price, require extra confirmation before entering.",
-    ],
-    ruleOfThumb: "90th percentile price > Current price × 1.15 in 1 month → Strong GBM tailwind. Upside:Downside ratio < 1.5 → Skip the trade.",
-    greenSignal: "Upside 2× downside",
-    redFlag: "10th pct < −20%",
-  },
-  {
-    id: "ito",
-    name: "Itô's Lemma",
-    tagline: "How Much Does an Option Actually Move?",
-    formula: "df = (∂f/∂t + μS∂f/∂S + ½σ²S²∂²f/∂S²)dt + σS(∂f/∂S)dW",
-    plainEnglish:
-      "The key practical term is ½σ²S²∂²f/∂S², the convexity adjustment — the extra value an option gains from price volatility, regardless of direction.",
-    howToUse: [
-      "Delta (∂f/∂S) tells you how much the option moves per $1 in the stock. Gamma (∂²f/∂S²) tells you how quickly Delta changes.",
-      "Screen for high-gamma situations. Before earnings, options with Gamma > 0.05 mean Delta shifts fast.",
-      "Use Vega for volatility plays. Vega measures gain per 1% rise in implied volatility. Before known events, high-Vega options bet on volatility expansion.",
-      "Watch Theta decay. Screen out options with Theta > 0.05 per day unless the expected move justifies it.",
-      "If IV is rising, the Itô convexity term grows — options become more valuable even without a price move. Screen for rising IV not yet fully priced in.",
-    ],
-    ruleOfThumb: "Gamma > 0.05 + upcoming catalyst → Consider long straddle. Vega > 0.15 + rising IV → Buy calls or puts before the move. Theta > 0.05/day → Avoid long options unless move is imminent.",
-    greenSignal: "Gamma > 0.05 + catalyst",
-    redFlag: "Theta > 0.05/day",
-  },
-  {
-    id: "blackscholes",
-    name: "Black-Scholes",
-    tagline: "Is the Option Overpriced or Underpriced?",
-    formula: "C = S·N(d₁) − Ke⁻ʳᵀ·N(d₂)",
-    plainEnglish:
-      "C is call price, S is stock price, K is strike, r is risk-free rate, T is time to expiry in years, N() is the normal distribution.",
-    howToUse: [
-      "Compute IV Rank. IV Rank = (Current IV − 52W Low) / (52W High − 52W Low). 0–100 tells you whether options are cheap or expensive.",
-      "IV Rank > 70 (expensive options). Sell covered calls or cash-secured puts to collect premium.",
-      "IV Rank < 20 (cheap options). Buy calls or puts ahead of a known catalyst. You are getting options below fair value.",
-      "Implied move to expiry ≈ σ × √T. If the stock prices in a 10% move but you expect 20%, options are mispriced in your favor.",
-      "Compare theoretical Black-Scholes price to market ask. If market is >15% above theoretical with no obvious reason, the option is overpriced — selling opportunity.",
-    ],
-    ruleOfThumb: "IV Rank > 70 → Sell premium (covered calls, puts). IV Rank < 20 before catalyst → Buy options. Market price > Black-Scholes by 15%+ → Selling edge exists.",
-    greenSignal: "IV Rank < 20 (buy) or > 70 (sell)",
-    redFlag: "IV Rank 40–60 = neutral",
-  },
-  {
-    id: "markowitz",
-    name: "Markowitz Portfolio Variance",
-    tagline: "Is This Stock Worth Adding to Your Portfolio?",
-    formula: "σ²ₚ = wᵀΣw",
-    plainEnglish:
-      "Portfolio variance; w is the vector of weights, Σ is the covariance matrix. Diversification reduces variance beyond what any single stock variance predicts.",
-    howToUse: [
-      "Sharpe Ratio = (Expected Return − Risk-Free Rate) / Standard Deviation. Screen for Sharpe > 1.0 (excellent if > 1.5).",
-      "Check correlation to your portfolio. Correlation below 0.3 = true diversifier. Above 0.7 = concentrated risk.",
-      "Optimal weight from the formula: max weight per position before marginal variance exceeds marginal return is often 5–15%.",
-      "Screen for the efficient frontier. Stocks on the frontier (highest Sharpe for their volatility) are worth holding.",
-      "Reject redundant positions. If correlation > 0.8 with something you own and lower Sharpe, hold zero weight.",
-    ],
-    ruleOfThumb: "Sharpe > 1.0 → Quality candidate. Correlation to portfolio < 0.3 → Strong diversification. Optimal weight = 0% → Skip. Sharpe > 1.5 and correlation < 0.5 → Priority addition.",
-    greenSignal: "Sharpe > 1.0, Corr < 0.3",
-    redFlag: "Corr > 0.8 to existing holdings",
-  },
-  {
-    id: "montecarlo",
-    name: "Monte Carlo Pricing",
-    tagline: "What Are the Realistic Outcomes?",
-    formula: "Sᵀ = S₀ · exp((r − σ²/2)T + σ√T·Z)",
-    plainEnglish:
-      "Z is a random draw from a standard normal. Running this 10,000 times gives 10,000 possible ending prices — the distribution is the risk profile.",
-    howToUse: [
-      "Generate 10,000 price paths using the stock's historical μ and σ.",
-      "Probability of profit: % of paths ending above your target. If only 20% reach target, odds are poor.",
-      "VaR: sort ending prices; 5th percentile = 95% VaR (worst-case in 95 of 100 scenarios). Screen out trades where VaR exceeds max acceptable loss.",
-      "Compare P(+20% gain) to P(−20% loss). Good trade: P(+20%) at least 1.5× P(−20%).",
-      "Use Monte Carlo to price options: average of max(S_T − K, 0) discounted; compare to Black-Scholes as a sanity check.",
-    ],
-    ruleOfThumb: "P(+20% gain) > 2 × P(−20% loss) → Strong risk-reward. VaR(95%) > your max loss tolerance → Reduce size or skip. Probability of hitting target < 30% → Lottery ticket, not investment.",
-    greenSignal: "P(+20%) > 2× P(−20%)",
-    redFlag: "VaR exceeds risk tolerance",
-  },
-] as const;
-
-const SCREENING_SUMMARY = [
-  { formula: "Bayes' Theorem", question: "Is this signal real?", green: "Posterior prob > 60%", red: "Posterior prob < 40%" },
-  { formula: "GBM", question: "Where can price go?", green: "Upside 2× downside", red: "10th pct < −20%" },
-  { formula: "Itô's Lemma", question: "How do options behave?", green: "Gamma > 0.05 + catalyst", red: "Theta > 0.05/day" },
-  { formula: "Black-Scholes", question: "Are options mispriced?", green: "IV Rank < 20 (buy) or > 70 (sell)", red: "IV Rank 40–60 = neutral" },
-  { formula: "Markowitz", question: "Is it worth adding?", green: "Sharpe > 1.0, Corr < 0.3", red: "Corr > 0.8 to existing holdings" },
-  { formula: "Monte Carlo", question: "What are the real odds?", green: "P(+20%) > 2× P(−20%)", red: "VaR exceeds risk tolerance" },
+const SCREENING_ROWS: { id: string; formula: string; question: string; green: string; red: string }[] = [
+  { id: "bayes", formula: "Bayes", question: "Signal real?", green: "Posterior > 60%", red: "< 40%" },
+  { id: "gbm", formula: "GBM", question: "Price range?", green: "Upside 2× downside", red: "10th pct < −20%" },
+  { id: "ito", formula: "Itô", question: "Options move?", green: "Gamma + catalyst", red: "Theta > 0.05/day" },
+  { id: "bs", formula: "Black-Scholes", question: "Options mispriced?", green: "IV Rank < 20 or > 70", red: "IV 40–60" },
+  { id: "markowitz", formula: "Markowitz", question: "Worth adding?", green: "Sharpe > 1, Corr < 0.3", red: "Corr > 0.8" },
+  { id: "mc", formula: "Monte Carlo", question: "Real odds?", green: "P(+20%) > 2× P(−20%)", red: "VaR too high" },
 ];
 
-function QuantitativeScreeningGuide() {
-  const [expandedId, setExpandedId] = useState<string | null>("bayes");
+type ScreeningResult = "green" | "red" | "review";
+
+/** Build factor inputs from research data; uses precomputed volatility signals when provided (avoids duplicate GBM/MC). */
+function getFactorInputs(
+  data: ResearchData,
+  volatilitySignals?: VolatilityPathSignals | null
+): FactorInputs {
+  const close = data.ohlcv?.close ?? [];
+  const validClose = close.filter((c): c is number => c != null);
+  const signals = volatilitySignals ?? getVolatilityAndPathSignals(validClose, data.currentPrice);
+
+  const lo = data.fundamentals?.fiftyTwoWeekLow;
+  const hi = data.fundamentals?.fiftyTwoWeekHigh;
+  let fiftyTwoWeekPct: number | null = null;
+  if (lo != null && hi != null && hi > lo) {
+    fiftyTwoWeekPct = ((data.currentPrice - lo) / (hi - lo)) * 100;
+  }
+
+  return {
+    currentPrice: data.currentPrice,
+    crossoverSignal: data.crossover?.signal ?? "none",
+    gbmBullish: signals?.gbmBullish ?? false,
+    gbmBearish: signals?.gbmBearish ?? false,
+    mcBullish: signals?.mcBullish ?? false,
+    mcBearish: signals?.mcBearish ?? false,
+    fiftyTwoWeekPct,
+    beta: data.fundamentals?.beta ?? null,
+  };
+}
+
+/** Uses precomputed volatilitySignals when provided (same as factor inputs — single source of truth). */
+function getScreeningResults(
+  data: ResearchData | null,
+  volatilitySignals?: VolatilityPathSignals | null
+): ScreeningResult[] {
+  if (!data) return SCREENING_ROWS.map(() => "review");
+  const close = data.ohlcv?.close ?? [];
+  const validClose = close.filter((c): c is number => c != null);
+  const signals = volatilitySignals ?? getVolatilityAndPathSignals(validClose, data.currentPrice);
+
+  let latestRsi: number | null = data.latestRSI ?? null;
+  if (latestRsi == null && data.indicators?.rsi) {
+    const rsi = data.indicators.rsi;
+    for (let i = rsi.length - 1; i >= 0; i--) if (rsi[i] != null) { latestRsi = rsi[i]!; break; }
+  }
+  const results: ScreeningResult[] = [];
+
+  // Bayes: RSI
+  if (latestRsi != null) {
+    if (latestRsi <= 35 || latestRsi >= 65) results.push("green");
+    else if (latestRsi >= 40 && latestRsi <= 60) results.push("red");
+    else results.push("review");
+  } else results.push("review");
+
+  // GBM
+  if (signals) {
+    if (signals.gbmBullish) results.push("green");
+    else if (signals.gbmBearish) results.push("red");
+    else results.push("review");
+  } else results.push("review");
+
+  results.push("review");
+  results.push("review");
+
+  const beta = data.fundamentals?.beta;
+  if (beta != null) {
+    if (beta < 0.9) results.push("green");
+    else if (beta > 1.4) results.push("red");
+    else results.push("review");
+  } else results.push("review");
+
+  // Monte Carlo
+  if (signals) {
+    if (signals.mcBullish) results.push("green");
+    else if (signals.mcBearish) results.push("red");
+    else results.push("review");
+  } else results.push("review");
+
+  return results;
+}
+
+function getScreeningSummary(results: ScreeningResult[]) {
+  const pass = results.filter((r) => r === "green").length;
+  const fail = results.filter((r) => r === "red").length;
+  const review = results.filter((r) => r === "review").length;
+  return { pass, fail, review, total: results.length };
+}
+
+function getSuggestedNextMove(results: ScreeningResult[]): { text: string; tone: "green" | "red" | "neutral" } {
+  const { pass, fail, review } = getScreeningSummary(results);
+  if (pass >= 4 && fail <= 1) {
+    return {
+      text: "Screen leans bullish. Consider adding to watchlist; if RSI supports (oversold), align with LEAPS suggestion and 9-condition checklist before entry.",
+      tone: "green",
+    };
+  }
+  if (fail >= 4) {
+    return {
+      text: "Screen leans bearish or mixed. Avoid new long LEAPS here unless you have a strong catalyst view; consider hedging or waiting for better setup.",
+      tone: "red",
+    };
+  }
+  if (pass >= 2 && fail >= 2) {
+    return {
+      text: "Mixed signals. Review each formula row above; focus on Bayes (RSI) and GBM/Monte Carlo for conviction. Use LEAPS only if your thesis overrides red flags.",
+      tone: "neutral",
+    };
+  }
+  return {
+    text: "Many results are Review (insufficient or neutral data). Gather more data (e.g. options/IV for Itô/BS) or wait for clearer RSI/volatility before committing.",
+    tone: "neutral",
+  };
+}
+
+function QuantitativeScreeningGuide({
+  researchData,
+  volatilitySignals,
+}: {
+  researchData?: ResearchData | null;
+  volatilitySignals?: VolatilityPathSignals | null;
+}) {
+  const results = useMemo(
+    () => getScreeningResults(researchData ?? null, volatilitySignals),
+    [researchData, volatilitySignals]
+  );
+  const summary = useMemo(() => getScreeningSummary(results), [results]);
+  const nextMove = useMemo(() => getSuggestedNextMove(results), [results]);
 
   return (
-    <div className="mt-10 rounded-xl border border-cyan-800/50 bg-slate-900/40 p-5">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-lg font-semibold tracking-tight text-slate-100">
-          Quantitative Stock Screening
-        </h2>
-        <span className="text-xs text-cyan-300/90">
-          Bayes · GBM · Itô · Black-Scholes · Markowitz · Monte Carlo
-        </span>
-      </div>
-      <p className="mt-1 text-sm text-slate-400">
-        A plain-English guide to 6 formulas and how to use them. Each one answers a specific question before you place a trade. You do not need a math degree — understand what question each formula answers and let the numbers do the work.
-      </p>
-
-      <div className="mt-4 space-y-2">
-        {SCREENING_FORMULAS.map((f) => {
-          const isOpen = expandedId === f.id;
-          return (
-            <div
-              key={f.id}
-              className="rounded-lg border border-slate-700/60 bg-slate-950/50 overflow-hidden"
-            >
-              <button
-                type="button"
-                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-800/40 transition-colors"
-                onClick={() => setExpandedId(isOpen ? null : f.id)}
-              >
-                <span className="font-semibold text-cyan-200">{f.name}</span>
-                <span className="text-xs text-slate-500 truncate max-w-[50%]">{f.tagline}</span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  className={clsx("h-4 w-4 flex-shrink-0 text-slate-500 transition-transform", isOpen && "rotate-180")}
-                >
-                  <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                </svg>
-              </button>
-              {isOpen && (
-                <div className="border-t border-slate-700/60 px-4 py-3 space-y-3 text-sm">
-                  <p className="text-slate-300">{f.plainEnglish}</p>
-                  <div className="rounded bg-slate-900/80 px-3 py-2 font-mono text-xs text-cyan-200/90 break-all">
-                    {f.formula}
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">How to use it for screening</div>
-                    <ul className="list-disc list-inside space-y-1 text-slate-400 text-xs">
-                      {f.howToUse.map((item, i) => (
-                        <li key={i}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-300">
-                      Green: {f.greenSignal}
-                    </span>
-                    <span className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300">
-                      Red: {f.redFlag}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-500 italic">Rule of thumb: {f.ruleOfThumb}</p>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-5">
-        <h3 className="text-sm font-semibold text-slate-200 mb-2">6-Formula Screening Checklist</h3>
-        <p className="text-xs text-slate-500 mb-3">A stock that passes 4+ of these checks is a high-conviction candidate.</p>
-        <div className="overflow-x-auto rounded-lg border border-slate-700/60">
-          <table className="w-full min-w-[600px] text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-700 bg-slate-800/50">
-                <th className="px-3 py-2 font-semibold text-slate-300">Formula</th>
-                <th className="px-3 py-2 font-semibold text-slate-300">Question</th>
-                <th className="px-3 py-2 font-semibold text-emerald-400/90">Green Signal</th>
-                <th className="px-3 py-2 font-semibold text-rose-400/90">Red Flag</th>
-              </tr>
-            </thead>
-            <tbody>
-              {SCREENING_SUMMARY.map((row) => (
-                <tr key={row.formula} className="border-b border-slate-800/80 hover:bg-slate-800/30">
-                  <td className="px-3 py-2 font-medium text-cyan-200/90">{row.formula}</td>
-                  <td className="px-3 py-2 text-slate-400">{row.question}</td>
-                  <td className="px-3 py-2 text-emerald-300/90">{row.green}</td>
-                  <td className="px-3 py-2 text-rose-300/90">{row.red}</td>
+    <div className="mt-10 rounded-xl border border-cyan-800/50 bg-slate-900/40 p-4">
+      <h2 className="text-base font-semibold text-slate-100">Quantitative Stock Screening</h2>
+      <p className="mt-0.5 text-xs text-slate-400">Bayes · GBM · Itô · Black-Scholes · Markowitz · Monte Carlo — Pass = favorable, Fail = unfavorable, Review = need more data or neutral.</p>
+      <div className="mt-3 overflow-x-auto rounded-lg border border-slate-700/60">
+        <table className="w-full min-w-[480px] text-left text-xs">
+          <thead>
+            <tr className="border-b border-slate-700 bg-slate-800/50">
+              <th className="px-2 py-1.5 font-semibold text-slate-300">Formula</th>
+              <th className="px-2 py-1.5 font-semibold text-slate-300">Question</th>
+              <th className="px-2 py-1.5 font-semibold text-emerald-400/90">Green</th>
+              <th className="px-2 py-1.5 font-semibold text-rose-400/90">Red</th>
+              <th className="px-2 py-1.5 font-semibold text-slate-400 w-20 text-center">Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SCREENING_ROWS.map((row, i) => {
+              const res = results[i] ?? "review";
+              return (
+                <tr key={row.id} className="border-b border-slate-800/80 hover:bg-slate-800/30">
+                  <td className="px-2 py-1.5 font-medium text-cyan-200/90">{row.formula}</td>
+                  <td className="px-2 py-1.5 text-slate-400">{row.question}</td>
+                  <td className="px-2 py-1.5 text-emerald-300/90">{row.green}</td>
+                  <td className="px-2 py-1.5 text-rose-300/90">{row.red}</td>
+                  <td className="px-2 py-1.5 text-center">
+                    {res === "green" && <span className="inline-flex items-center gap-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Pass</span>}
+                    {res === "red" && <span className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-medium text-rose-300"><span className="h-1.5 w-1.5 rounded-full bg-rose-400" />Fail</span>}
+                    {res === "review" && <span className="inline-flex items-center gap-1 rounded bg-slate-600/30 px-1.5 py-0.5 text-[10px] text-slate-400"><span className="h-1.5 w-1.5 rounded-full bg-slate-500" />Review</span>}
+                  </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-
-      <div className="mt-5 rounded-lg border border-amber-500/20 bg-amber-950/10 p-4">
-        <h3 className="text-sm font-semibold text-amber-200 mb-2">How to Put It All Together</h3>
-        <p className="text-xs text-slate-400 leading-relaxed">
-          Run a stock through all six checks in sequence: (1) Bayes — confirm a signal exists. (2) GBM — project price range and confirm risk-reward is asymmetric. (3) Itô — if trading options, check Gamma and Vega. (4) Black-Scholes — see if options are cheap or expensive. (5) Markowitz — confirm the stock improves your portfolio. (6) Monte Carlo — get the probability distribution and VaR before sizing. A stock that passes all six is rare and usually worth acting on. Failing three or more means pass regardless of the story. The formulas remove emotion from the process.
+      <div className="mt-4 rounded-lg border border-slate-700/60 bg-slate-800/30 p-3">
+        <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Results summary</div>
+        <p className="text-xs text-slate-300">
+          Pass: <span className="text-emerald-400 font-medium">{summary.pass}</span>
+          {" · "}
+          Fail: <span className="text-rose-400 font-medium">{summary.fail}</span>
+          {" · "}
+          Review: <span className="text-slate-400 font-medium">{summary.review}</span>
+          {" "}(of {summary.total}). Pass = formula favors the trade; Fail = formula argues against; Review = inconclusive or no data.
+        </p>
+        <div className="mt-3 text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Suggested next move</div>
+        <p
+          className={clsx(
+            "text-xs leading-relaxed",
+            nextMove.tone === "green" && "text-emerald-300/95",
+            nextMove.tone === "red" && "text-rose-300/95",
+            nextMove.tone === "neutral" && "text-slate-300",
+          )}
+        >
+          {nextMove.text}
         </p>
       </div>
     </div>

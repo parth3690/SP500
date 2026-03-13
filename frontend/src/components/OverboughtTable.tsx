@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 
+import { formatMoney } from "@/lib/format";
 import type { OverboughtRow } from "@/lib/types";
 
 type SortKey = "ticker" | "companyName" | "sector" | "currentPrice" | "weeklyRSI" | "dailyRSI";
@@ -15,10 +16,6 @@ function compare(a: unknown, b: unknown): number {
   if (b == null) return -1;
   if (typeof a === "number" && typeof b === "number") return a - b;
   return String(a).localeCompare(String(b));
-}
-
-function formatMoney(v: number): string {
-  return v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(2) : v.toFixed(3);
 }
 
 function rsiColor(rsi: number | null): string {
