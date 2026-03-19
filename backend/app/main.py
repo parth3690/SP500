@@ -23,6 +23,7 @@ from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
     PRICE_DATA_CACHE,
     cache_get, cache_set,
+    clear_research_and_price_caches,
 )
 from .services.movers import compute_movers
 from .services.crossovers import compute_crossovers
@@ -176,7 +177,8 @@ async def _preload_dashboard_data() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    """Kick off background preload so first page load is fast."""
+    """Fresh Yahoo-backed research/prices after each process start (avoids stale cached quotes)."""
+    clear_research_and_price_caches()
     asyncio.create_task(_preload_dashboard_data())
 
 

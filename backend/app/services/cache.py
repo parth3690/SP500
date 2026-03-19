@@ -37,3 +37,21 @@ def cache_set(cache: TTLCache, key: Hashable, value: Any) -> None:
     with _LOCK:
         cache[key] = value
 
+
+def clear_research_and_price_caches() -> None:
+    """Drop cached OHLCV/research responses and shared Yahoo price batches (stale quotes)."""
+    with _LOCK:
+        RESEARCH_CACHE.clear()
+        PRICE_DATA_CACHE.clear()
+
+
+def clear_all_caches() -> None:
+    """Wipe all in-memory TTL caches (use sparingly; constituents will refetch)."""
+    with _LOCK:
+        RESEARCH_CACHE.clear()
+        PRICE_DATA_CACHE.clear()
+        MOVERS_CACHE.clear()
+        CROSSOVERS_CACHE.clear()
+        RSI_SCAN_CACHE.clear()
+        CONSTITUENTS_CACHE.clear()
+

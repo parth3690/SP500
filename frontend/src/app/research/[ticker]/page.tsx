@@ -92,6 +92,19 @@ export default function ResearchPage() {
   const rsiChartRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<HTMLDivElement>(null);
 
+  // Price overlays
+  const [showEma20, setShowEma20] = useState(false);
+  const [showEma50, setShowEma50] = useState(false);
+  const [showEma200, setShowEma200] = useState(false);
+
+  // Single computation for GBM/Monte Carlo (shared by factor inputs + screening).
+  // Must be called unconditionally to keep React hook order stable.
+  const volatilitySignals = useMemo(() => {
+    if (!data?.ohlcv?.close) return null;
+    const validClose = data.ohlcv.close.filter((c): c is number => c != null);
+    return getVolatilityAndPathSignals(validClose, data.currentPrice);
+  }, [data]);
+
   // ── Data fetcher ────────────────────────────────────────────────────────
   const loadData = useCallback(
     async (start: string, end: string, refresh?: boolean) => {
@@ -139,6 +152,26 @@ export default function ResearchPage() {
   }, [ticker]);
 
   // ── Chart Rendering ────────────────────────────────────────────────────
+
+  function computeEma(values: (number | null)[], period: number): (number | null)[] {
+    const out: (number | null)[] = new Array(values.length).fill(null);
+    let prevEma: number | null = null;
+    const k = 2 / (period + 1);
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (v == null) {
+        out[i] = prevEma;
+        continue;
+      }
+      if (prevEma == null) {
+        prevEma = v;
+      } else {
+        prevEma = v * k + prevEma * (1 - k);
+      }
+      out[i] = prevEma;
+    }
+    return out;
+  }
 
   const renderMainChart = useCallback(
     (d: ResearchData) => {
@@ -217,13 +250,56 @@ export default function ResearchPage() {
           line: { color: "#f97316", width: 1.5 },
           yaxis: "y",
         },
+      ];
+
+      // Optional EMA overlays
+      if (showEma20 || showEma50 || showEma200) {
+        const ema20 = showEma20 ? computeEma(close, 20) : null;
+        const ema50 = showEma50 ? computeEma(close, 50) : null;
+        const ema200 = showEma200 ? computeEma(close, 200) : null;
+        if (ema20) {
+          traces.push({
+            type: "scatter",
+            x: dates,
+            y: ema20,
+            mode: "lines",
+            name: "20-EMA",
+            line: { color: "#22c55e", width: 1.2, dash: "dot" },
+            yaxis: "y",
+          });
+        }
+        if (ema50) {
+          traces.push({
+            type: "scatter",
+            x: dates,
+            y: ema50,
+            mode: "lines",
+            name: "50-EMA",
+            line: { color: "#0ea5e9", width: 1.2, dash: "dot" },
+            yaxis: "y",
+          });
+        }
+        if (ema200) {
+          traces.push({
+            type: "scatter",
+            x: dates,
+            y: ema200,
+            mode: "lines",
+            name: "200-EMA",
+            line: { color: "#f97316", width: 1.2, dash: "dot" },
+            yaxis: "y",
+          });
+        }
+      }
+
+      traces.push(
         // Volume bars
         {
           type: "bar", x: dates, y: volume,
           name: "Volume", marker: { color: volColors },
           yaxis: "y2", showlegend: false,
-        },
-      ];
+        }
+      );
 
       const layout = {
         ...PLOTLY_DARK,
@@ -249,7 +325,7 @@ export default function ResearchPage() {
 
       window.Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] });
     },
-    []
+    [showEma20, showEma50, showEma200]
   );
 
   const renderRsiChart = useCallback(
@@ -461,13 +537,6 @@ export default function ResearchPage() {
     none: { text: "No Crossover Signal", color: "text-slate-400" },
   };
   const cs = crossoverLabel[data.crossover.signal] ?? crossoverLabel.none;
-
-  // Single computation for GBM/Monte Carlo (shared by factor inputs + screening).
-  const volatilitySignals = useMemo(() => {
-    if (!data?.ohlcv?.close) return null;
-    const validClose = data.ohlcv.close.filter((c): c is number => c != null);
-    return getVolatilityAndPathSignals(validClose, data.currentPrice);
-  }, [data]);
 
   // ── Render ─────────────────────────────────────────────────────────────
 
@@ -868,9 +937,41 @@ export default function ResearchPage() {
 
       {/* ── Main Price Chart ── */}
       <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/30 p-4">
-        <h2 className="mb-2 text-sm font-semibold text-slate-200">
-          Price Chart · 50-DMA · 200-DMA · Bollinger Bands · Fibonacci
-        </h2>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-slate-200">
+            Price Chart · 50-DMA · 200-DMA · Bollinger Bands · Fibonacci
+          </h2>
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
+            <span className="uppercase tracking-wider text-slate-500">EMAs</span>
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-600 bg-slate-900 text-emerald-400"
+                checked={showEma20}
+                onChange={(e) => setShowEma20(e.target.checked)}
+              />
+              <span>20-EMA</span>
+            </label>
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-600 bg-slate-900 text-sky-400"
+                checked={showEma50}
+                onChange={(e) => setShowEma50(e.target.checked)}
+              />
+              <span>50-EMA</span>
+            </label>
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-600 bg-slate-900 text-orange-400"
+                checked={showEma200}
+                onChange={(e) => setShowEma200(e.target.checked)}
+              />
+              <span>200-EMA</span>
+            </label>
+          </div>
+        </div>
         <div ref={mainChartRef} className="w-full" style={{ minHeight: 520 }}>
           {!plotlyReady && <div className="flex h-[520px] items-center justify-center text-sm text-slate-500">Loading chart engine...</div>}
         </div>
