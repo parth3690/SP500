@@ -8,6 +8,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from .fmp import fmp_symbol, merge_fmp_live_into_research
 from .indicators import (
     compute_bollinger_series,
     compute_ema_series,
@@ -914,7 +915,7 @@ def compute_research(
     safe_vol = [int(v) if np.isfinite(v) else 0 for v in vol_arr]
 
     # ── Build response ────────────────────────────────────────────────────
-    return {
+    out: dict[str, Any] = {
         "ticker": yahoo_ticker.replace("-", "."),
         "companyName": company_name,
         "sector": sector,
@@ -960,3 +961,6 @@ def compute_research(
         },
         "strategies": strategies,
     }
+
+    merge_fmp_live_into_research(out, fmp_symbol_str=fmp_symbol(yahoo_ticker))
+    return out

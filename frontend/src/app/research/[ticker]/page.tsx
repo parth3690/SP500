@@ -647,7 +647,17 @@ export default function ResearchPage() {
             </span>
           </div>
           <span className="text-[11px] text-slate-500">
-            Last close for selected range · {data.dateRangeEnd}
+            {data.liveQuote ? (
+              <>
+                Live quote via {data.liveQuote.source}
+                {data.liveQuote.asOf ? ` · ${data.liveQuote.asOf}` : ""}. Chart: daily closes through {data.dateRangeEnd}
+                {data.chartLastClose != null && (
+                  <> · last bar close ${fmt(data.chartLastClose)}</>
+                )}
+              </>
+            ) : (
+              <>Last close for selected range · {data.dateRangeEnd}</>
+            )}
           </span>
         </div>
       </header>

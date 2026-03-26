@@ -20,6 +20,10 @@ RESEARCH_CACHE: TTLCache = TTLCache(maxsize=32, ttl=RESEARCH_TTL_SECONDS)
 RSI_SCAN_TTL_SECONDS = int(os.getenv("RSI_SCAN_TTL_SECONDS", "900"))
 RSI_SCAN_CACHE: TTLCache = TTLCache(maxsize=8, ttl=RSI_SCAN_TTL_SECONDS)
 
+# Fast-mover scan cache (FMP-based)
+MOVE_FINDER_TTL_SECONDS = int(os.getenv("MOVE_FINDER_TTL_SECONDS", "120"))
+MOVE_FINDER_CACHE: TTLCache = TTLCache(maxsize=8, ttl=MOVE_FINDER_TTL_SECONDS)
+
 # Shared S&P 500 price data cache — avoids redundant Yahoo downloads
 # across movers, crossovers, and RSI endpoints
 PRICE_DATA_TTL_SECONDS = int(os.getenv("PRICE_DATA_TTL_SECONDS", "900"))
@@ -53,5 +57,6 @@ def clear_all_caches() -> None:
         MOVERS_CACHE.clear()
         CROSSOVERS_CACHE.clear()
         RSI_SCAN_CACHE.clear()
+        MOVE_FINDER_CACHE.clear()
         CONSTITUENTS_CACHE.clear()
 

@@ -101,6 +101,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `MAX_RANGE_DAYS` | `366` | Maximum allowed date range |
 | `CONSTITUENTS_TTL_SECONDS` | `86400` | Constituents cache TTL (24h) |
 | `MOVERS_TTL_SECONDS` | `900` | Movers cache TTL (15m) |
+| `FMP_API_KEY` | _(empty)_ | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs/dashboard) API key; when set, research header uses **live quote** from FMP while charts stay on Yahoo daily OHLCV |
+| `FMP_API_BASE` | `https://financialmodelingprep.com/stable` | Override FMP base URL if needed |
 
 **Frontend** (`frontend/.env.local`):
 
@@ -189,7 +191,7 @@ Both auto-deploy on every `git push` to main.
 
 - **Constituents**: Scraped from Wikipedia's "List of S&P 500 companies"
 - **Ticker normalization**: Share classes like `BRK.B` are converted to Yahoo format (`BRK-B`)
-- **Prices**: Fetched from Yahoo Finance via `yfinance` in batched downloads
+- **Prices**: Historical OHLCV from Yahoo Finance via `yfinance`; optional **live** header price/change/volume from [Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs) when `FMP_API_KEY` is set
 - **Caching**: Constituents cached 24h, movers cached 15m, research cached per ticker+date range
 - **Indicators**:
   - All standard indicators (SMA, EMA, RSI, MACD, Bollinger, Fibonacci, Stochastic, ADX, OBV) are computed server-side

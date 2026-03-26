@@ -21,12 +21,13 @@ from .models import (
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
-    PRICE_DATA_CACHE,
+    PRICE_DATA_CACHE, MOVE_FINDER_CACHE,
     cache_get, cache_set,
     clear_research_and_price_caches,
 )
 from .services.movers import compute_movers
 from .services.crossovers import compute_crossovers
+from .services.move_finder import find_runner_moves
 from .services.research import compute_research
 from .services.rsi_scan import (
     compute_rsi_scan,
@@ -478,6 +479,7 @@ async def research(
     """
     Deep research for a single ticker: OHLCV, indicators, strategies.
     Accepts optional start/end date range for custom analysis periods.
+    If FMP_API_KEY is set, merges a live quote from Financial Modeling Prep into header fields.
     """
     ticker_upper = ticker.strip().upper()
 
@@ -574,3 +576,43 @@ async def movers_csv(
             "Content-Disposition": f'attachment; filename="sp500-movers_{start_date.isoformat()}_{end_date.isoformat()}.csv"'
         },
     )
+
+
+@app.get("/api/move-finder")
+async def move_finder(
+    min_change_pct: float = Query(15.0, ge=0.1, le=200.0),
+    min_volume: int = Query(200_000, ge=1, le=500_000_000),
+    min_price: float = Query(1.0, ge=0.01, le=1000.0),
+    max_price: float = Query(150.0, ge=0.01, le=10000.0),
+    limit: int = Query(25, ge=1, le=100),
+    refresh: bool = Query(False),
+) -> dict[str, Any]:
+    """
+    Find explosive runner-type moves (AXTI/VCX-style) from live FMP gainers.
+    """
+    if min_price > max_price:
+        raise HTTPException(status_code=400, detail="min_price must be <= max_price")
+
+    cache_key = (
+        "move_finder",
+        round(min_change_pct, 2),
+        min_volume,
+        round(min_price, 2),
+        round(max_price, 2),
+        limit,
+    )
+    if not refresh:
+        cached = cache_get(MOVE_FINDER_CACHE, cache_key)
+        if cached is not None:
+            return cached
+
+    payload = await run_in_threadpool(
+        find_runner_moves,
+        min_change_pct=min_change_pct,
+        min_volume=min_volume,
+        min_price=min_price,
+        max_price=max_price,
+        limit=limit,
+    )
+    cache_set(MOVE_FINDER_CACHE, cache_key, payload)
+    return payload

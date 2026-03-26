@@ -112,6 +112,14 @@ export type OverboughtResponse = {
   };
 };
 
+/** Present when backend merged a Financial Modeling Prep live quote (see FMP_API_KEY). */
+export type LiveQuoteMeta = {
+  source: string;
+  providerUrl?: string;
+  symbol?: string;
+  asOf?: string | null;
+};
+
 export type ResearchData = {
   ticker: string;
   companyName: string;
@@ -124,6 +132,9 @@ export type ResearchData = {
   changePct: number;
   volume: number;
   avgVolume: number;
+  /** Last daily close in the OHLCV series (Yahoo); set when live quote overrides header price. */
+  chartLastClose?: number;
+  liveQuote?: LiveQuoteMeta | null;
   latestRSI: number | null;
   fundamentals: {
     trailingPE: number | null;
