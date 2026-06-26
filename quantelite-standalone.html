@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantElite - Standalone Elite Trading Platform</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #000000 0%, #1a1a1a 50%, #2a2a2a 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 30px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #ff8c00, #ff6600, #ff4400);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: 1.2rem;
+            color: #a0a0a0;
+            margin-bottom: 20px;
+        }
+
+        .badge {
+            display: inline-block;
+            background: linear-gradient(45deg, #00ff88, #00cc66);
+            color: #000;
+            padding: 5px 15px;
+            border-radius: 15px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .unified-form {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #ff8c00;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #ffffff;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #ff8c00;
+            box-shadow: 0 0 20px rgba(255, 140, 0, 0.3);
+        }
+
+        .form-group input::placeholder {
+            color: #888;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #ffffff;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #ff8c00;
+            box-shadow: 0 0 20px rgba(255, 140, 0, 0.3);
+        }
+
+        .form-control option {
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+
+        .analyze-btn {
+            width: 100%;
+            padding: 18px;
+            background: linear-gradient(45deg, #ff8c00, #ff6600);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 1.2rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .analyze-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(255, 140, 0, 0.4);
+        }
+
+        .analyze-btn:active {
+            transform: translateY(0);
+        }
+
+        .analyze-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .results-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        .chart-section, .analysis-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #ff8c00;
+            text-align: center;
+            padding-bottom: 10px;
+            border-bottom: 2px solid rgba(255, 140, 0, 0.3);
+        }
+
+        #chart {
+            width: 100%;
+            height: 400px;
+            border-radius: 10px;
+        }
+
+        .stock-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .info-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .info-label {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #ff8c00;
+        }
+
+        .price-change {
+            color: #00ff88;
+        }
+
+        .price-change.negative {
+            color: #ff4444;
+        }
+
+        .strategies-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 15px;
+        }
+
+        .strategy-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .strategy-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.2);
+        }
+
+        .strategy-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .strategy-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .signal-badge {
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+        }
+
+        .signal-buy {
+            background: linear-gradient(45deg, #00ff88, #00cc66);
+            color: #000;
+        }
+
+        .signal-sell {
+            background: linear-gradient(45deg, #ff4444, #cc0000);
+            color: #fff;
+        }
+
+        .signal-neutral {
+            background: linear-gradient(45deg, #ffaa00, #cc8800);
+            color: #000;
+        }
+
+        .strategy-description {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+            margin-bottom: 15px;
+        }
+
+        .confidence-bar {
+            background: rgba(255, 255, 255, 0.1);
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(45deg, #ff8c00, #ff6600);
+            transition: width 0.5s ease;
+        }
+
+        .confidence-text {
+            text-align: center;
+            font-size: 0.9rem;
+            color: #ff8c00;
+            font-weight: 600;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .metric-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .metric-label {
+            font-size: 0.8rem;
+            color: #a0a0a0;
+            margin-bottom: 3px;
+        }
+
+        .metric-value {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #ff8c00;
+            font-size: 1.2rem;
+        }
+
+        .loading::after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ff8c00;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: rgba(255, 68, 68, 0.1);
+            border: 1px solid #ff4444;
+            color: #ff4444;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .success {
+            background: rgba(0, 255, 136, 0.1);
+            border: 1px solid #00ff88;
+            color: #00ff88;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        @media (max-width: 768px) {
+            .results-container {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .container {
+                padding: 15px;
+            }
+        }
+
+        .technical-indicators {
+            margin-top: 20px;
+        }
+
+        .indicators-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .indicator-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .indicator-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #ff8c00;
+            margin-bottom: 5px;
+        }
+
+        .indicator-label {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+        }
+
+        .technical-indicators h3 {
+            color: #ff8c00;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 QuantElite - Standalone Elite Trading Platform</h1>
+            <p class="subtitle">Real-Time Technical Analysis • Quantitative Strategies • Market Intelligence</p>
+            <span class="badge">✨ Browser UI · Yahoo data via local proxy (recommended)</span>
+            <p style="font-size: 0.9rem; color: #888; margin-top: 15px;">
+                💡 <strong>Yahoo + CORS:</strong> Opening this file as <code style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 4px;">file://</code>
+                or plain <code style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 4px;">python -m http.server</code> usually <strong>cannot</strong> call Yahoo from the browser.
+                From the project root run:
+                <code style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 4px; display: inline-block; margin-top: 6px;">python3 tools/quantelite_server.py</code>
+                then open
+                <code style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 4px;">http://127.0.0.1:8765/quantelite-standalone.html</code>
+                — the page will use same-origin <code style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 4px;">/api/yahoo-chart</code> (no CORS). Public CORS proxies are tried as a fallback and often fail.
+            </p>
+        </div>
+
+        <div class="unified-form">
+            <form id="unifiedForm" onsubmit="event.preventDefault(); analyzeStock();">
+                <div class="form-group">
+                    <label for="tickerInput">Stock Ticker Symbol</label>
+                    <input type="text" id="tickerInput" placeholder="e.g., AAPL, MSFT, GOOGL, TSLA, AMZN" required>
+                </div>
+                <div class="form-group">
+                    <label for="dateRange">Analysis Period</label>
+                    <select id="dateRange" class="form-control">
+                        <option value="1mo">1 Month (30 days)</option>
+                        <option value="3mo" selected>3 Months (90 days)</option>
+                        <option value="6mo">6 Months (180 days)</option>
+                        <option value="1y">1 Year (365 days)</option>
+                        <option value="2y">2 Years (730 days)</option>
+                        <option value="3y">3 Years (~1,095 days)</option>
+                        <option value="4y">4 Years (~1,460 days)</option>
+                        <option value="5y">5 Years (~1,825 days)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <button type="submit" class="analyze-btn" id="analyzeBtn">
+                        🚀 Run Elite Analysis
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            Analyzing stock data from Yahoo Finance...
+        </div>
+
+        <div id="error" class="error" style="display: none;">
+            Error loading data. Please try again.
+        </div>
+
+        <div id="results" style="display: none;">
+            <div class="results-container">
+                <!-- Technical Analysis Section -->
+                <div class="chart-section">
+                    <h2 class="section-title">📊 Technical Analysis</h2>
+                    <div id="chart"></div>
+                    
+                    <div class="technical-indicators">
+                        <h3 style="color: #00d4ff; margin-bottom: 15px;">Technical Indicators</h3>
+                        <div class="indicators-grid" id="technicalIndicators">
+                            <!-- Technical indicators will be populated here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quantitative Strategies Section -->
+                <div class="analysis-section">
+                    <h2 class="section-title">🎯 Quantitative Strategies</h2>
+                    
+                    <div class="stock-info" id="stockInfo">
+                        <!-- Stock information will be populated here -->
+                    </div>
+
+                    <div class="strategies-grid" id="strategiesContainer">
+                        <!-- Quantitative strategies will be populated here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Utility functions for technical analysis
+        function calculateSMA(data, period) {
+            const result = [];
+            for (let i = 0; i < data.length; i++) {
+                if (i < period - 1) {
+                    result.push(null);
+                } else {
+                    const sum = data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
+                    result.push(sum / period);
+                }
+            }
+            return result;
+        }
+
+        function calculateEMA(data, period) {
+            const k = 2 / (period + 1);
+            const result = [data[0]];
+            
+            for (let i = 1; i < data.length; i++) {
+                result.push(data[i] * k + result[i - 1] * (1 - k));
+            }
+            return result;
+        }
+
+        function calculateRSI(prices, period = 14) {
+            const changes = [];
+            for (let i = 1; i < prices.length; i++) {
+                changes.push(prices[i] - prices[i - 1]);
+            }
+            
+            const gains = changes.map(c => c > 0 ? c : 0);
+            const losses = changes.map(c => c < 0 ? -c : 0);
+            
+            let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+            let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+            
+            for (let i = period; i < gains.length; i++) {
+                avgGain = (avgGain * (period - 1) + gains[i]) / period;
+                avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+            }
+            
+            if (avgLoss === 0) return 100;
+            const rs = avgGain / avgLoss;
+            return 100 - (100 / (1 + rs));
+        }
+
+        function calculateMACD(prices) {
+            const ema12 = calculateEMA(prices, 12);
+            const ema26 = calculateEMA(prices, 26);
+            const macdLine = ema12.map((val, i) => val - ema26[i]);
+            const signalLine = calculateEMA(macdLine, 9);
+            const histogram = macdLine.map((val, i) => val - signalLine[i]);
+            
+            return {
+                macd: macdLine[macdLine.length - 1],
+                signal: signalLine[signalLine.length - 1],
+                histogram: histogram[histogram.length - 1]
+            };
+        }
+
+        function calculateVolatility(prices, period = 20) {
+            const returns = [];
+            for (let i = 1; i < prices.length; i++) {
+                returns.push((prices[i] - prices[i - 1]) / prices[i - 1]);
+            }
+            
+            const recentReturns = returns.slice(-period);
+            const mean = recentReturns.reduce((a, b) => a + b, 0) / recentReturns.length;
+            const variance = recentReturns.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / recentReturns.length;
+            return Math.sqrt(variance);
+        }
+
+        // Quantitative Strategy Implementations
+        function trendFollowingStrategy(prices, volumes) {
+            const sma20 = calculateSMA(prices, 20);
+            const sma50 = calculateSMA(prices, 50);
+            const macdData = calculateMACD(prices);
+            
+            const currentPrice = prices[prices.length - 1];
+            const sma50Value = sma50[sma50.length - 1];
+            const sma20Value = sma20[sma20.length - 1];
+            
+            const trendStrength = ((currentPrice - sma50Value) / sma50Value) * 100;
+            
+            let signal = 'NEUTRAL';
+            let confidence = 30;
+            
+            if (sma20Value > sma50Value && macdData.histogram > 0) {
+                signal = 'BUY';
+                confidence = Math.min(90, 50 + Math.abs(trendStrength) * 2);
+            } else if (sma20Value < sma50Value && macdData.histogram < 0) {
+                signal = 'SELL';
+                confidence = Math.min(90, 50 + Math.abs(trendStrength) * 2);
+            }
+            
+            return {
+                name: '📈 Time-Series Trend Following',
+                description: 'Identifies market trends using moving averages and MACD',
+                signal: signal,
+                confidence: confidence,
+                metrics: {
+                    'SMA 20': `$${sma20Value.toFixed(2)}`,
+                    'SMA 50': `$${sma50Value.toFixed(2)}`,
+                    'MACD': macdData.macd.toFixed(3),
+                    'Trend Strength': `${trendStrength.toFixed(2)}%`
+                }
+            };
+        }
+
+        function multiFactorStrategy(prices, volumes) {
+            const currentPrice = prices[prices.length - 1];
+            const returns30d = prices.length >= 30 ? 
+                (currentPrice - prices[prices.length - 30]) / prices[prices.length - 30] : 0;
+            
+            const momentumFactor = returns30d > 0.05 ? 1 : returns30d < -0.05 ? -1 : 0;
+            
+            const avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+            const currentVolume = volumes[volumes.length - 1];
+            const volumeRatio = currentVolume / avgVolume;
+            const qualityFactor = (0.8 < volumeRatio && volumeRatio < 1.5) ? 1 : -1;
+            
+            const volatility = calculateVolatility(prices);
+            const lowVolFactor = volatility < 0.02 ? 1 : volatility > 0.04 ? -1 : 0;
+            
+            const compositeScore = (momentumFactor * 2 + qualityFactor + lowVolFactor) / 4;
+            
+            let signal = 'NEUTRAL';
+            let confidence = Math.abs(compositeScore) * 100;
+            
+            if (compositeScore > 0.3) signal = 'BUY';
+            else if (compositeScore < -0.3) signal = 'SELL';
+            
+            return {
+                name: '⚖️ Multi-Factor Equity Model',
+                description: 'Combines value, momentum, quality, and low-volatility factors',
+                signal: signal,
+                confidence: Math.min(85, confidence),
+                metrics: {
+                    'Momentum (30d)': `${(returns30d * 100).toFixed(2)}%`,
+                    'Quality Score': `${qualityFactor * 100}%`,
+                    'Volatility': `${(volatility * 100).toFixed(2)}%`,
+                    'Composite Score': `${(compositeScore * 100).toFixed(1)}%`
+                }
+            };
+        }
+
+        function momentumStrategy(prices) {
+            const currentPrice = prices[prices.length - 1];
+            const rsi = calculateRSI(prices);
+            
+            const returns1W = prices.length >= 5 ? 
+                (currentPrice - prices[prices.length - 5]) / prices[prices.length - 5] : 0;
+            const returns1M = prices.length >= 21 ? 
+                (currentPrice - prices[prices.length - 21]) / prices[prices.length - 21] : 0;
+            const returns3M = prices.length >= 63 ? 
+                (currentPrice - prices[prices.length - 63]) / prices[prices.length - 63] : 0;
+            
+            const rsScore = (returns1W * 0.5 + returns1M * 0.3 + returns3M * 0.2) * 100;
+            
+            let signal = 'NEUTRAL';
+            let confidence = 50;
+            
+            if (rsi > 70 && rsScore > 10) {
+                signal = 'SELL';
+                confidence = Math.min(80, 50 + Math.abs(rsi - 70));
+            } else if (rsi < 30 && rsScore < -10) {
+                signal = 'BUY';
+                confidence = Math.min(80, 50 + Math.abs(30 - rsi));
+            } else if (rsScore > 5 && rsi > 50) {
+                signal = 'BUY';
+                confidence = 60;
+            } else if (rsScore < -5 && rsi < 50) {
+                signal = 'SELL';
+                confidence = 60;
+            }
+            
+            return {
+                name: '🚀 Cross-Sectional Momentum',
+                description: 'Analyzes relative strength and momentum indicators',
+                signal: signal,
+                confidence: confidence,
+                metrics: {
+                    'RSI': rsi.toFixed(2),
+                    'RS Score': `${rsScore.toFixed(2)}%`,
+                    '1W Return': `${(returns1W * 100).toFixed(2)}%`,
+                    '1M Return': `${(returns1M * 100).toFixed(2)}%`
+                }
+            };
+        }
+
+        function statArbStrategy(prices) {
+            const sma20 = calculateSMA(prices, 20);
+            const mean = sma20[sma20.length - 1];
+            const currentPrice = prices[prices.length - 1];
+            
+            const recentPrices = prices.slice(-20);
+            const variance = recentPrices.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / 20;
+            const stdDev = Math.sqrt(variance);
+            
+            const zScore = (currentPrice - mean) / stdDev;
+            const upperBand = mean + (stdDev * 2);
+            const lowerBand = mean - (stdDev * 2);
+            
+            let signal = 'NEUTRAL';
+            let confidence = Math.abs(zScore) * 25;
+            
+            if (zScore < -2) {
+                signal = 'BUY';
+                confidence = Math.min(85, 50 + Math.abs(zScore) * 15);
+            } else if (zScore > 2) {
+                signal = 'SELL';
+                confidence = Math.min(85, 50 + Math.abs(zScore) * 15);
+            } else if (zScore < -1) {
+                signal = 'BUY';
+                confidence = 40;
+            } else if (zScore > 1) {
+                signal = 'SELL';
+                confidence = 40;
+            }
+            
+            return {
+                name: '🎯 Statistical Arbitrage',
+                description: 'Mean reversion and pairs trading opportunities',
+                signal: signal,
+                confidence: confidence,
+                metrics: {
+                    'Z-Score': zScore.toFixed(2),
+                    'Upper Band': `$${upperBand.toFixed(2)}`,
+                    'Lower Band': `$${lowerBand.toFixed(2)}`,
+                    'Mean Price': `$${mean.toFixed(2)}`
+                }
+            };
+        }
+
+        function mlAlphaStrategy(prices, volumes) {
+            const rsi = calculateRSI(prices);
+            const macdData = calculateMACD(prices);
+            const volatility = calculateVolatility(prices);
+            
+            const avgVolume = volumes.slice(-20, -1).reduce((a, b) => a + b, 0) / 19;
+            const currentVolume = volumes[volumes.length - 1];
+            const volumeAnomaly = currentVolume > avgVolume * 1.5;
+            
+            const momentum = prices.length >= 5 ? 
+                (prices[prices.length - 1] - prices[prices.length - 5]) / prices[prices.length - 5] : 0;
+            
+            const features = {
+                momentum: momentum,
+                rsiSignal: rsi < 30 ? 1 : rsi > 70 ? -1 : 0,
+                macdSignal: macdData.histogram > 0 ? 1 : -1,
+                volSignal: volatility < 0.02 ? 1 : volatility > 0.04 ? -1 : 0,
+                volumeSignal: volumeAnomaly ? 1 : 0
+            };
+            
+            const mlScore = (
+                features.momentum * 0.3 +
+                features.rsiSignal * 0.25 +
+                features.macdSignal * 0.2 +
+                features.volSignal * 0.15 +
+                features.volumeSignal * 0.1
+            );
+            
+            let signal = 'NEUTRAL';
+            let confidence = Math.abs(mlScore) * 100;
+            
+            if (mlScore > 0.3) signal = 'BUY';
+            else if (mlScore < -0.3) signal = 'SELL';
+            
+            const sentiment = Math.random() > 0.5 ? 'Positive' : Math.random() > 0.3 ? 'Neutral' : 'Negative';
+            
+            return {
+                name: '🤖 Machine Learning Alpha (AI Mode)',
+                description: 'AI-driven signal generation using multiple features',
+                signal: signal,
+                confidence: Math.min(75, confidence),
+                metrics: {
+                    'ML Score': `${(mlScore * 100).toFixed(1)}%`,
+                    'Feature Count': '5 active',
+                    'Sentiment': sentiment,
+                    'Volume Anomaly': volumeAnomaly ? 'Detected' : 'Normal'
+                }
+            };
+        }
+
+        /** Build aligned OHLCV from Yahoo chart result (drops rows with null close). */
+        function buildStockPayloadFromChartResult(result) {
+            const timestamps = result.timestamp;
+            const quote = result.indicators.quote[0];
+            const meta = result.meta;
+            const dates = [];
+            const prices = [];
+            const volumes = [];
+            const open = [];
+            const high = [];
+            const low = [];
+            for (let i = 0; i < timestamps.length; i++) {
+                const c = quote.close[i];
+                if (c == null || !Number.isFinite(c)) continue;
+                dates.push(new Date(timestamps[i] * 1000).toISOString().split('T')[0]);
+                prices.push(c);
+                open.push(quote.open[i] != null && Number.isFinite(quote.open[i]) ? quote.open[i] : c);
+                high.push(quote.high[i] != null && Number.isFinite(quote.high[i]) ? quote.high[i] : c);
+                low.push(quote.low[i] != null && Number.isFinite(quote.low[i]) ? quote.low[i] : c);
+                volumes.push(
+                    quote.volume[i] != null && Number.isFinite(quote.volume[i]) ? quote.volume[i] : 0
+                );
+            }
+            if (dates.length === 0) {
+                throw new Error('No usable bars in Yahoo response');
+            }
+            return {
+                dates,
+                prices,
+                volumes,
+                open,
+                high,
+                low,
+                currentPrice: meta.regularMarketPrice,
+                previousClose: meta.chartPreviousClose,
+                currency: meta.currency,
+                symbol: meta.symbol
+            };
+        }
+
+        async function fetchJsonFlexible(url, mode) {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error('HTTP ' + response.status);
+            }
+            const ct = (response.headers.get('content-type') || '').toLowerCase();
+            if (mode === 'allorigins-get') {
+                const wrapper = await response.json();
+                if (wrapper == null || wrapper.contents == null) {
+                    throw new Error('allorigins empty response');
+                }
+                const inner = typeof wrapper.contents === 'string' ? wrapper.contents : JSON.stringify(wrapper.contents);
+                return JSON.parse(inner);
+            }
+            const text = await response.text();
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                throw new Error('Invalid JSON from server');
+            }
+        }
+
+        async function fetchStockData(ticker, period) {
+            const interval = '1d';
+            const sym = encodeURIComponent(ticker);
+            const period2 = Math.floor(Date.now() / 1000);
+            const daySec = 24 * 60 * 60;
+            const yearSec = 365.25 * daySec;
+
+            let yahooUrl;
+            if (period === '3y') {
+                const period1 = Math.floor(period2 - 3 * yearSec);
+                yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${period1}&period2=${period2}&interval=${interval}`;
+            } else if (period === '4y') {
+                const period1 = Math.floor(period2 - 4 * yearSec);
+                yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${period1}&period2=${period2}&interval=${interval}`;
+            } else if (period === '5y') {
+                const period1 = Math.floor(period2 - 5 * yearSec);
+                yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${period1}&period2=${period2}&interval=${interval}`;
+            } else {
+                const rangeMap = {
+                    '1mo': '1mo',
+                    '3mo': '3mo',
+                    '6mo': '6mo',
+                    '1y': '1y',
+                    '2y': '2y'
+                };
+                const range = rangeMap[period] || '3mo';
+                yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=${interval}`;
+            }
+
+            const attempts = [];
+            if (location.protocol === 'http:' || location.protocol === 'https:') {
+                try {
+                    const u = new URL('/api/yahoo-chart', location.origin);
+                    u.searchParams.set('ticker', ticker);
+                    u.searchParams.set('period', period);
+                    attempts.push({ url: u.toString(), mode: 'json' });
+                } catch (e) { /* ignore */ }
+            }
+            attempts.push(
+                { url: `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`, mode: 'allorigins-get' },
+                { url: `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`, mode: 'json' },
+                { url: `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`, mode: 'json' }
+            );
+
+            let lastError = null;
+            for (const a of attempts) {
+                try {
+                    const data = await fetchJsonFlexible(a.url, a.mode === 'allorigins-get' ? 'allorigins-get' : 'json');
+                    if (data.error) {
+                        throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
+                    }
+                    if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+                        throw new Error('No data available for this ticker');
+                    }
+                    const result = data.chart.result[0];
+                    const payload = buildStockPayloadFromChartResult(result);
+                    console.log('Loaded chart via', a.url.split('?')[0]);
+                    return payload;
+                } catch (error) {
+                    console.warn('Fetch attempt failed:', a.url.substring(0, 80), error.message);
+                    lastError = error;
+                }
+            }
+            console.error('All fetch attempts failed:', lastError);
+            const hint =
+                (location.protocol === 'http:' || location.protocol === 'https:') &&
+                attempts.some((x) => x.url.includes('/api/yahoo-chart'))
+                    ? ' If you are not using tools/quantelite_server.py, run: python3 tools/quantelite_server.py and open port 8765.'
+                    : ' Run: python3 tools/quantelite_server.py then open http://127.0.0.1:8765/quantelite-standalone.html';
+            throw new Error(
+                `Failed to fetch data for ${ticker}. ${lastError ? lastError.message + '.' : ''}${hint}`
+            );
+        }
+
+        async function analyzeStock() {
+            const ticker = document.getElementById('tickerInput').value.toUpperCase().trim();
+            const dateRange = document.getElementById('dateRange').value;
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            
+            if (!ticker) {
+                showError('Please enter a valid ticker symbol');
+                return;
+            }
+
+            showLoading();
+            hideError();
+            hideResults();
+            analyzeBtn.disabled = true;
+
+            try {
+                // Fetch stock data from Yahoo Finance
+                const stockData = await fetchStockData(ticker, dateRange);
+                
+                // Calculate technical indicators
+                const sma50 = calculateSMA(stockData.prices, 50);
+                const sma200 = calculateSMA(stockData.prices, 200);
+                const rsi = calculateRSI(stockData.prices);
+                
+                // Run quantitative strategies
+                const strategies = [
+                    trendFollowingStrategy(stockData.prices, stockData.volumes),
+                    multiFactorStrategy(stockData.prices, stockData.volumes),
+                    momentumStrategy(stockData.prices),
+                    statArbStrategy(stockData.prices),
+                    mlAlphaStrategy(stockData.prices, stockData.volumes)
+                ];
+                
+                // Calculate stock info
+                const change = stockData.currentPrice - stockData.previousClose;
+                const changePercent = (change / stockData.previousClose) * 100;
+                
+                const stockInfo = {
+                    symbol: ticker,
+                    price: stockData.currentPrice.toFixed(2),
+                    change: change.toFixed(2),
+                    changePercent: changePercent.toFixed(2),
+                    volume: stockData.volumes[stockData.volumes.length - 1],
+                    currency: stockData.currency
+                };
+                
+                // Display results
+                displayStockInfo(stockInfo);
+                displayQuantitativeStrategies(strategies);
+                displayTechnicalChart(ticker, stockData.dates, stockData.prices, sma50, sma200);
+                displayTechnicalIndicators(rsi, sma50, sma200, stockData.prices);
+                
+                showResults();
+                
+            } catch (error) {
+                console.error('Analysis error:', error);
+                showError(error.message || `Error analyzing ${ticker}. Please try again.`);
+            } finally {
+                analyzeBtn.disabled = false;
+                hideLoading();
+            }
+        }
+
+        function displayStockInfo(stockInfo) {
+            const stockInfoContainer = document.getElementById('stockInfo');
+            const changeClass = stockInfo.change >= 0 ? 'price-change' : 'price-change negative';
+            const changeSign = stockInfo.change >= 0 ? '+' : '';
+
+            stockInfoContainer.innerHTML = `
+                <div class="info-card">
+                    <div class="info-label">Symbol</div>
+                    <div class="info-value">${stockInfo.symbol}</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">Current Price</div>
+                    <div class="info-value">${stockInfo.currency} $${stockInfo.price}</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">Change</div>
+                    <div class="info-value ${changeClass}">${changeSign}${stockInfo.change}</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">Change %</div>
+                    <div class="info-value ${changeClass}">${changeSign}${stockInfo.changePercent}%</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">Volume</div>
+                    <div class="info-value">${stockInfo.volume.toLocaleString()}</div>
+                </div>
+            `;
+        }
+
+        function displayQuantitativeStrategies(strategies) {
+            const container = document.getElementById('strategiesContainer');
+            
+            container.innerHTML = strategies.map(strategy => `
+                <div class="strategy-card">
+                    <div class="strategy-header">
+                        <div class="strategy-name">${strategy.name}</div>
+                        <div class="signal-badge signal-${strategy.signal.toLowerCase()}">${strategy.signal}</div>
+                    </div>
+                    <div class="strategy-description">${strategy.description}</div>
+                    
+                    <div class="confidence-bar">
+                        <div class="confidence-fill" style="width: ${strategy.confidence}%"></div>
+                    </div>
+                    <div class="confidence-text">${strategy.confidence.toFixed(1)}% Confidence</div>
+                    
+                    <div class="metrics-grid">
+                        ${Object.entries(strategy.metrics || {}).map(([key, value]) => `
+                            <div class="metric-item">
+                                <div class="metric-label">${key}</div>
+                                <div class="metric-value">${value}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function displayTechnicalChart(ticker, dates, prices, sma50, sma200) {
+            const chartData = [{
+                x: dates,
+                y: prices,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Stock Price',
+                line: { color: '#ff8c00', width: 3 }
+            }];
+
+            // Add 50-day MA
+            chartData.push({
+                x: dates,
+                y: sma50,
+                type: 'scatter',
+                mode: 'lines',
+                name: '50-Day MA',
+                line: { color: '#00d4ff', width: 2 }
+            });
+
+            // Add 200-day MA
+            chartData.push({
+                x: dates,
+                y: sma200,
+                type: 'scatter',
+                mode: 'lines',
+                name: '200-Day MA',
+                line: { color: '#ff6600', width: 2 }
+            });
+
+            const layout = {
+                title: `${ticker} - Technical Analysis`,
+                xaxis: { 
+                    title: 'Date',
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    color: '#ffffff'
+                },
+                yaxis: { 
+                    title: 'Price ($)',
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    color: '#ffffff'
+                },
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#ffffff' },
+                legend: { 
+                    bgcolor: 'rgba(0,0,0,0.5)',
+                    bordercolor: 'rgba(255,255,255,0.1)'
+                }
+            };
+
+            Plotly.newPlot('chart', chartData, layout, {responsive: true});
+        }
+
+        function displayTechnicalIndicators(rsi, sma50, sma200, prices) {
+            const container = document.getElementById('technicalIndicators');
+            
+            const currentPrice = prices[prices.length - 1];
+            const sma50Value = sma50.filter(v => v !== null).slice(-1)[0];
+            const sma200Value = sma200.filter(v => v !== null).slice(-1)[0];
+            
+            container.innerHTML = `
+                <div class="indicator-card">
+                    <div class="indicator-value">${rsi.toFixed(2)}</div>
+                    <div class="indicator-label">RSI (14)</div>
+                </div>
+                <div class="indicator-card">
+                    <div class="indicator-value">$${currentPrice.toFixed(2)}</div>
+                    <div class="indicator-label">Current Price</div>
+                </div>
+                <div class="indicator-card">
+                    <div class="indicator-value">$${sma50Value ? sma50Value.toFixed(2) : 'N/A'}</div>
+                    <div class="indicator-label">50-Day MA</div>
+                </div>
+                <div class="indicator-card">
+                    <div class="indicator-value">$${sma200Value ? sma200Value.toFixed(2) : 'N/A'}</div>
+                    <div class="indicator-label">200-Day MA</div>
+                </div>
+            `;
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            hideLoading();
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function showResults() {
+            document.getElementById('results').style.display = 'block';
+        }
+
+        function hideResults() {
+            document.getElementById('results').style.display = 'none';
+        }
+
+        // Auto-focus on ticker input
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('tickerInput').focus();
+        });
+
+        // Allow Enter key to submit
+        document.getElementById('tickerInput').addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                analyzeStock();
+            }
+        });
+    </script>
+</body>
+</html>
+

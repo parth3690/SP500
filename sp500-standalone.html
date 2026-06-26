@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>S&amp;P 500 Analyzer — Standalone (browser)</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --bd:#334155; --tx:#e2e8f0; --muted:#94a3b8; --em:#34d399; --rose:#fb7185; --am:#fbbf24; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--tx); line-height:1.45; }
+    header { padding:16px 20px; border-bottom:1px solid var(--bd); display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+    h1 { font-size:1.1rem; margin:0; font-weight:700; }
+    .banner { font-size:12px; color:var(--muted); max-width:720px; }
+    button { padding:10px 16px; border-radius:8px; border:1px solid var(--bd); background:#059669; color:#fff; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    button.sec { background:#334155; }
+    .wrap { padding:16px 20px 40px; max-width:1400px; margin:0 auto; }
+    .grid { display:grid; gap:12px; }
+    .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    label { font-size:12px; color:var(--muted); }
+    input[type="date"] { background:var(--card); border:1px solid var(--bd); color:var(--tx); padding:6px 8px; border-radius:6px; }
+    .pill { padding:6px 12px; border-radius:6px; border:1px solid var(--bd); background:var(--card); cursor:pointer; font-size:13px; }
+    .pill.on { background:#e2e8f0; color:#0f172a; border-color:#e2e8f0; }
+    .progress { height:6px; background:var(--card); border-radius:3px; overflow:hidden; margin:8px 0; }
+    .progress > i { display:block; height:100%; background:#059669; width:0%; transition:width .2s; }
+    .status { font-size:13px; color:var(--muted); }
+    section { margin-top:28px; }
+    section h2 { font-size:1rem; margin:0 0 8px; }
+    section p.desc { font-size:13px; color:var(--muted); margin:0 0 12px; }
+    .card { border:1px solid var(--bd); border-radius:12px; overflow:hidden; background:rgba(30,41,59,.5); }
+    .card-h { padding:12px 14px; border-bottom:1px solid var(--bd); font-size:13px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th, td { padding:8px 10px; text-align:left; border-bottom:1px solid #1e293b; }
+    th { background:#0f172a; color:var(--muted); font-weight:600; cursor:pointer; user-select:none; }
+    td.num { text-align:right; font-variant-numeric:tabular-nums; }
+    tr:hover td { background:rgba(15,23,42,.4); }
+    .em { color:var(--em); }
+    .rs { color:var(--rose); }
+    .am { color:var(--am); }
+    a { color:#7dd3fc; }
+    .split { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    @media (max-width:900px) { .split { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>S&amp;P 500 Analyzer — Standalone</h1>
+      <p class="banner">All logic runs in this file in your browser (no Node/Python server). Constituents from Wikipedia; prices from Yahoo Finance. If your browser blocks Yahoo (CORS), a public relay is used automatically — first full refresh can take several minutes.</p>
+    </div>
+    <div class="row">
+      <button id="btnLoad" type="button">Load constituents</button>
+      <button id="btnRefresh" type="button" disabled>Refresh all data</button>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="grid">
+      <div class="row">
+        <span class="label">Range</span>
+        <button type="button" class="pill preset" data-p="ytd">YTD</button>
+        <button type="button" class="pill preset" data-p="1m">1M</button>
+        <button type="button" class="pill preset" data-p="3m">3M</button>
+        <label>Start <input type="date" id="start" /></label>
+        <label>End <input type="date" id="end" /></label>
+      </div>
+      <div class="progress"><i id="prog"></i></div>
+      <div class="status" id="status">Idle.</div>
+    </div>
+
+    <section id="secMovers">
+      <h2>Movers (date range)</h2>
+      <p class="desc">Last close on/before end vs last on/before start — same rule as the FastAPI app.</p>
+      <div class="split">
+        <div class="card"><div class="card-h"><span>Top gainers</span><span id="gCount">0</span></div><div id="gainers"></div></div>
+        <div class="card"><div class="card-h"><span>Top losers</span><span id="lCount">0</span></div><div id="losers"></div></div>
+      </div>
+    </section>
+
+    <section id="secCross">
+      <h2>50 / 200-DMA convergence (±2%)</h2>
+      <p class="desc">Near golden vs near death cross — same gap formula as backend.</p>
+      <div class="split">
+        <div class="card"><div class="card-h">Near golden cross <span id="ngc">0</span></div><div id="golden"></div></div>
+        <div class="card"><div class="card-h">Near death cross <span id="ndc">0</span></div><div id="death"></div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Weekly RSI</h2>
+      <div class="split">
+        <div class="card"><div class="card-h em">Weekly RSI ≤ 30</div><div id="wOver"></div></div>
+        <div class="card"><div class="card-h rs">Weekly RSI ≥ 70</div><div id="wUnd"></div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Daily RSI</h2>
+      <div class="split">
+        <div class="card"><div class="card-h em">Daily RSI ≤ 30</div><div id="dOver"></div></div>
+        <div class="card"><div class="card-h rs">Daily RSI ≥ 70</div><div id="dUnd"></div></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+(function () {
+  "use strict";
+
+  const RSI_PERIOD = 14;
+  const OVERSOLD = 30;
+  const OVERBOUGHT = 70;
+  const CROSS_THRESH = 2;
+  const MOVER_TOP = 50;
+  const YAHOO_RANGE = "2y";
+  const BATCH = 3;
+  const DELAY_MS = 260;
+  const RELAY_URLS = [
+    (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+    (u) => "https://api.allorigins.win/get?url=" + encodeURIComponent(u),
+    (u) => "https://corsproxy.io/?" + encodeURIComponent(u),
+    (u) => "https://cors.isomorphic-git.org/" + u,
+  ];
+
+  /** Wikipedia display ticker → Yahoo symbol */
+  function yahooTicker(t) {
+    return String(t || "").trim().toUpperCase().replace(/\./g, "-");
+  }
+
+  function iso(d) {
+    const z = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+  }
+
+  function parseIso(s) {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59);
+  }
+
+  function startOfYear(d) {
+    return new Date(d.getFullYear(), 0, 1);
+  }
+
+  let constituents = [];
+  /** @type {Map<string, {dates: string[], closes: number[]}>} */
+  let seriesMap = new Map();
+  let preset = "ytd";
+
+  function setStatus(t) { document.getElementById("status").textContent = t; }
+  function setProg(p) { document.getElementById("prog").style.width = (p * 100).toFixed(1) + "%"; }
+
+  async function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function fetchWithTimeout(url, opts = {}, timeoutMs = 20000) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...opts, signal: ctrl.signal });
+    } finally {
+      clearTimeout(id);
+    }
+  }
+
+  async function parseJsonResponse(resp, isGetRelay) {
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    if (isGetRelay) {
+      const j = await resp.json();
+      if (!j || !j.contents) throw new Error("Empty relay payload");
+      return JSON.parse(j.contents);
+    }
+    const txt = await resp.text();
+    return JSON.parse(txt);
+  }
+
+  async function fetchJsonAny(url) {
+    let lastErr = null;
+    try {
+      const direct = await fetchWithTimeout(url, { mode: "cors" }, 12000);
+      if (direct.ok) return await direct.json();
+      lastErr = new Error("Direct failed: HTTP " + direct.status);
+    } catch (e) {
+      lastErr = e;
+    }
+
+    for (let i = 0; i < RELAY_URLS.length; i++) {
+      const relayUrl = RELAY_URLS[i](url);
+      try {
+        const isGetRelay = relayUrl.includes("/get?url=");
+        const resp = await fetchWithTimeout(relayUrl, {}, 25000);
+        return await parseJsonResponse(resp, isGetRelay);
+      } catch (e) {
+        lastErr = e;
+        await sleep(250 + i * 200);
+      }
+    }
+
+    throw new Error("All sources failed: " + (lastErr?.message || "unknown"));
+  }
+
+  async function loadConstituents() {
+    const api = "https://en.wikipedia.org/w/api.php?action=parse&page=List_of_S%26P_500_companies&prop=text&format=json&origin=*";
+    const j = await fetch(api).then((r) => r.json());
+    const html = j.parse.text["*"];
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const tables = doc.querySelectorAll("table.wikitable");
+    let rows = [];
+    for (const tb of tables) {
+      const headerTr = tb.querySelector("tr");
+      if (!headerTr) continue;
+      const ths = [...headerTr.querySelectorAll("th")].map((th) => th.textContent.replace(/\s+/g, " ").trim());
+      const symIdx = ths.findIndex((h) => h === "Symbol");
+      const secIdx = ths.findIndex((h) => h === "Security");
+      const gicsIdx = ths.findIndex((h) => h.includes("GICS Sector") && !h.includes("Sub-Industry"));
+      if (symIdx < 0 || secIdx < 0) continue;
+      const trs = tb.querySelectorAll("tr");
+      for (let i = 1; i < trs.length; i++) {
+        const cells = trs[i].querySelectorAll("td");
+        if (cells.length <= Math.max(symIdx, secIdx)) continue;
+        const ticker = cells[symIdx].textContent.trim().split(/\s/)[0];
+        const companyName = cells[secIdx].textContent.trim();
+        const sector = gicsIdx >= 0 && cells[gicsIdx] ? cells[gicsIdx].textContent.trim() : "";
+        if (ticker && /^[A-Z0-9.\-]+$/i.test(ticker) && companyName) {
+          rows.push({ ticker, yahoo: yahooTicker(ticker), companyName, sector });
+        }
+      }
+      if (rows.length) break;
+    }
+    const seen = new Set();
+    constituents = rows.filter((r) => {
+      if (seen.has(r.ticker)) return false;
+      seen.add(r.ticker);
+      return true;
+    });
+    setStatus("Loaded " + constituents.length + " constituents.");
+  }
+
+  function extractCloses(chartJson) {
+    const r = chartJson.chart?.result?.[0];
+    if (!r) return null;
+    const ts = r.timestamp;
+    const q = r.indicators?.quote?.[0];
+    if (!ts || !q || !q.close) return null;
+    const dates = [];
+    const closes = [];
+    for (let i = 0; i < ts.length; i++) {
+      const c = q.close[i];
+      if (c == null || isNaN(c)) continue;
+      dates.push(new Date(ts[i] * 1000).toISOString().slice(0, 10));
+      closes.push(c);
+    }
+    if (dates.length < RSI_PERIOD + 5) return null;
+    return { dates, closes };
+  }
+
+  async function fetchOne(sym) {
+    const url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(sym) + "?interval=1d&range=" + YAHOO_RANGE;
+    const j = await fetchJsonAny(url);
+    return extractCloses(j);
+  }
+
+  async function loadAllPrices() {
+    seriesMap.clear();
+    const list = constituents;
+    let done = 0;
+    let ok = 0;
+    let failed = 0;
+    for (let i = 0; i < list.length; i += BATCH) {
+      const chunk = list.slice(i, i + BATCH);
+      await Promise.all(
+        chunk.map(async (c) => {
+          try {
+            const s = await fetchOne(c.yahoo);
+            if (s) {
+              seriesMap.set(c.yahoo, s);
+              ok++;
+            } else {
+              failed++;
+            }
+          } catch (_) {
+            failed++;
+          }
+          done++;
+          setProg(done / list.length);
+          if (done % 20 === 0 || done === list.length) {
+            setStatus("Downloading prices… " + done + "/" + list.length + " (ok " + ok + ", failed " + failed + ")");
+          }
+        })
+      );
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+    }
+    setStatus("Price series loaded: " + seriesMap.size + " / " + list.length + " tickers.");
+  }
+
+  /** Wilder RSI — matches pandas ewm(alpha=1/14, adjust=false).mean() on gains/losses */
+  function rsiWilder(closes, period) {
+    if (closes.length < period + 1) return [];
+    const out = new Array(closes.length).fill(null);
+    const gains = [];
+    const losses = [];
+    for (let i = 1; i < closes.length; i++) {
+      const d = closes[i] - closes[i - 1];
+      gains.push(d > 0 ? d : 0);
+      losses.push(d < 0 ? -d : 0);
+    }
+    let avgG = 0;
+    let avgL = 0;
+    for (let i = 0; i < period; i++) {
+      avgG += gains[i];
+      avgL += losses[i];
+    }
+    avgG /= period;
+    avgL /= period;
+    const alpha = 1 / period;
+    for (let i = period; i < gains.length; i++) {
+      avgG = alpha * gains[i] + (1 - alpha) * avgG;
+      avgL = alpha * losses[i] + (1 - alpha) * avgL;
+      const rs = avgL === 0 ? 100 : avgG / avgL;
+      const rsi = 100 - 100 / (1 + rs);
+      out[i + 1] = rsi;
+    }
+    return out;
+  }
+
+  function sma(arr, win) {
+    const out = new Array(arr.length).fill(null);
+    let sum = 0;
+    for (let i = 0; i < arr.length; i++) {
+      sum += arr[i];
+      if (i >= win) sum -= arr[i - win];
+      if (i >= win - 1) out[i] = sum / win;
+    }
+    return out;
+  }
+
+  /** Friday-close weekly series from daily dates + closes */
+  function weeklyLastFriday(dates, closes) {
+    const wDates = [];
+    const wCloses = [];
+    let lastWeek = null;
+    let lastClose = null;
+    for (let i = 0; i < dates.length; i++) {
+      const d = new Date(dates[i] + "T12:00:00");
+      const fri = new Date(d);
+      const day = d.getDay();
+      const diff = (day <= 5 ? 5 - day : 5 - day + 7) % 7;
+      fri.setDate(d.getDate() + diff);
+      const wk = fri.toISOString().slice(0, 10);
+      if (wk !== lastWeek && lastWeek !== null && lastClose !== null) {
+        wDates.push(lastWeek);
+        wCloses.push(lastClose);
+      }
+      lastWeek = wk;
+      lastClose = closes[i];
+    }
+    if (lastWeek && lastClose != null) {
+      wDates.push(lastWeek);
+      wCloses.push(lastClose);
+    }
+    return { dates: wDates, closes: wCloses };
+  }
+
+  function lastOnOrBefore(dates, closes, cutoff) {
+    let best = -1;
+    for (let i = 0; i < dates.length; i++) {
+      const t = new Date(dates[i] + "T23:59:59").getTime();
+      if (t <= cutoff.getTime()) best = i;
+    }
+    if (best < 0) return null;
+    return { i: best, price: closes[best], date: dates[best] };
+  }
+
+  function computeMovers(startStr, endStr) {
+    const startCut = parseIso(startStr);
+    const endCut = parseIso(endStr);
+    const rows = [];
+    for (const c of constituents) {
+      const s = seriesMap.get(c.yahoo);
+      if (!s) continue;
+      const past = lastOnOrBefore(s.dates, s.closes, startCut);
+      const curr = lastOnOrBefore(s.dates, s.closes, endCut);
+      if (!past || !curr || past.price === 0) continue;
+      const pct = (curr.price / past.price - 1) * 100;
+      rows.push({
+        ticker: c.ticker,
+        companyName: c.companyName,
+        sector: c.sector,
+        currentPrice: curr.price,
+        currentPriceDate: curr.date,
+        pastPrice: past.price,
+        pastPriceDate: past.date,
+        pctChange: pct,
+      });
+    }
+    rows.sort((a, b) => b.pctChange - a.pctChange);
+    const gainers = rows.slice(0, MOVER_TOP);
+    const losers = [...rows].sort((a, b) => a.pctChange - b.pctChange).slice(0, MOVER_TOP);
+    return { gainers, losers, all: rows };
+  }
+
+  function computeCrossovers() {
+    const rows = [];
+    for (const c of constituents) {
+      const s = seriesMap.get(c.yahoo);
+      if (!s || s.closes.length < 200) continue;
+      const d50 = sma(s.closes, 50);
+      const d200 = sma(s.closes, 200);
+      const i = s.closes.length - 1;
+      const v50 = d50[i];
+      const v200 = d200[i];
+      if (v50 == null || v200 == null || v200 === 0) continue;
+      const gapPct = ((v50 - v200) / v200) * 100;
+      if (Math.abs(gapPct) > CROSS_THRESH) continue;
+      const price = s.closes[i];
+      const date = s.dates[i];
+      rows.push({
+        ticker: c.ticker,
+        companyName: c.companyName,
+        sector: c.sector,
+        currentPrice: price,
+        priceDate: date,
+        dma50: v50,
+        dma200: v200,
+        gapPct,
+        signal: v50 <= v200 ? "near_golden_cross" : "near_death_cross",
+      });
+    }
+    rows.sort((a, b) => Math.abs(a.gapPct) - Math.abs(b.gapPct));
+    return rows;
+  }
+
+  function lastNumeric(arr) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const v = arr[i];
+      if (v != null && !isNaN(v)) return v;
+    }
+    return null;
+  }
+
+  function latestRsiWeeklyDaily(s) {
+    const dailyRsi = rsiWilder(s.closes, RSI_PERIOD);
+    const w = weeklyLastFriday(s.dates, s.closes);
+    const wRsi = w.closes.length >= RSI_PERIOD + 1 ? rsiWilder(w.closes, RSI_PERIOD) : [];
+    const i = s.closes.length - 1;
+    return {
+      lastPrice: s.closes[i],
+      priceDate: s.dates[i],
+      dailyRSI: lastNumeric(dailyRsi),
+      weeklyRSI: lastNumeric(wRsi),
+    };
+  }
+
+  function rsiTables() {
+    const wOver = [];
+    const wUnder = [];
+    const dOver = [];
+    const dUnder = [];
+    for (const c of constituents) {
+      const s = seriesMap.get(c.yahoo);
+      if (!s) continue;
+      const x = latestRsiWeeklyDaily(s);
+      if (x.weeklyRSI == null || isNaN(x.weeklyRSI)) continue;
+      const row = (rsiW, rsiD) => ({
+        ticker: c.ticker,
+        companyName: c.companyName,
+        sector: c.sector,
+        price: x.lastPrice,
+        priceDate: x.priceDate,
+        weeklyRSI: rsiW,
+        dailyRSI: rsiD,
+      });
+      if (x.weeklyRSI <= OVERSOLD) wOver.push(row(x.weeklyRSI, x.dailyRSI));
+      if (x.weeklyRSI >= OVERBOUGHT) wUnder.push(row(x.weeklyRSI, x.dailyRSI));
+      if (x.dailyRSI != null && !isNaN(x.dailyRSI)) {
+        if (x.dailyRSI <= OVERSOLD) dOver.push(row(x.weeklyRSI, x.dailyRSI));
+        if (x.dailyRSI >= OVERBOUGHT) dUnder.push(row(x.weeklyRSI, x.dailyRSI));
+      }
+    }
+    wOver.sort((a, b) => a.weeklyRSI - b.weeklyRSI);
+    wUnder.sort((a, b) => b.weeklyRSI - a.weeklyRSI);
+    dOver.sort((a, b) => a.dailyRSI - b.dailyRSI);
+    dUnder.sort((a, b) => b.dailyRSI - a.dailyRSI);
+    return { wOver, wUnder, dOver, dUnder };
+  }
+
+  function fmtPct(n) {
+    const s = n > 0 ? "+" : "";
+    return s + n.toFixed(2) + "%";
+  }
+
+  function renderTable(targetId, cols, rows) {
+    const esc = (v) => {
+      if (v == null) return "";
+      return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    };
+    let h = "<table><thead><tr>";
+    cols.forEach((c) => (h += "<th>" + esc(c.label) + "</th>"));
+    h += "</tr></thead><tbody>";
+    if (!rows.length) h += '<tr><td colspan="' + cols.length + '">No rows</td></tr>';
+    rows.forEach((r) => {
+      h += "<tr>";
+      cols.forEach((c) => {
+        const v = typeof c.key === "function" ? c.key(r) : r[c.key];
+        const cls = c.num ? " num" : "";
+        h += "<td" + cls + ">" + (v == null ? "—" : esc(v)) + "</td>";
+      });
+      h += "</tr>";
+    });
+    h += "</tbody></table>";
+    document.getElementById(targetId).innerHTML = h;
+  }
+
+  function renderAll() {
+    const start = document.getElementById("start").value;
+    const end = document.getElementById("end").value;
+    const { gainers, losers } = computeMovers(start, end);
+    document.getElementById("gCount").textContent = String(gainers.length);
+    document.getElementById("lCount").textContent = String(losers.length);
+    renderTable("gainers", [
+      { label: "Ticker", key: "ticker" },
+      { label: "Company", key: "companyName" },
+      { label: "Sector", key: "sector" },
+      { label: "Now", key: (r) => r.currentPrice.toFixed(2), num: true },
+      { label: "%", key: (r) => fmtPct(r.pctChange), num: true },
+    ], gainers);
+    renderTable("losers", [
+      { label: "Ticker", key: "ticker" },
+      { label: "Company", key: "companyName" },
+      { label: "Sector", key: "sector" },
+      { label: "Now", key: (r) => r.currentPrice.toFixed(2), num: true },
+      { label: "%", key: (r) => fmtPct(r.pctChange), num: true },
+    ], losers);
+
+    const xrows = computeCrossovers();
+    const golden = xrows.filter((r) => r.signal === "near_golden_cross");
+    const death = xrows.filter((r) => r.signal === "near_death_cross");
+    document.getElementById("ngc").textContent = String(golden.length);
+    document.getElementById("ndc").textContent = String(death.length);
+    const crossCols = [
+      { label: "Ticker", key: "ticker" },
+      { label: "Gap %", key: (r) => r.gapPct.toFixed(3), num: true },
+      { label: "50-DMA", key: (r) => r.dma50.toFixed(2), num: true },
+      { label: "200-DMA", key: (r) => r.dma200.toFixed(2), num: true },
+    ];
+    renderTable("golden", crossCols, golden);
+    renderTable("death", crossCols, death);
+
+    const { wOver, wUnder, dOver, dUnder } = rsiTables();
+    const rsiCols = (primary) => [
+      { label: "Ticker", key: "ticker" },
+      { label: "W RSI", key: (r) => (r.weeklyRSI == null ? "—" : r.weeklyRSI.toFixed(2)), num: true },
+      { label: "D RSI", key: (r) => (r.dailyRSI == null ? "—" : r.dailyRSI.toFixed(2)), num: true },
+      { label: "Price", key: (r) => r.price.toFixed(2), num: true },
+    ];
+    renderTable("wOver", rsiCols("w"), wOver);
+    renderTable("wUnd", rsiCols("w"), wUnder);
+    renderTable("dOver", rsiCols("d"), dOver);
+    renderTable("dUnd", rsiCols("d"), dUnder);
+  }
+
+  function applyPreset() {
+    if (preset === "custom") return;
+    const end = new Date();
+    document.getElementById("end").value = iso(end);
+    let start;
+    if (preset === "ytd") {
+      start = startOfYear(end);
+    } else if (preset === "1m") {
+      start = new Date(end);
+      start.setMonth(start.getMonth() - 1);
+    } else if (preset === "3m") {
+      start = new Date(end);
+      start.setMonth(start.getMonth() - 3);
+    } else {
+      start = startOfYear(end);
+    }
+    document.getElementById("start").value = iso(start);
+  }
+
+  document.querySelectorAll(".preset").forEach((b) => {
+    b.addEventListener("click", () => {
+      preset = b.getAttribute("data-p");
+      document.querySelectorAll(".preset").forEach((x) => x.classList.toggle("on", x.getAttribute("data-p") === preset));
+      applyPreset();
+      if (seriesMap.size) renderAll();
+    });
+  });
+
+  document.getElementById("btnLoad").addEventListener("click", async () => {
+    document.getElementById("btnLoad").disabled = true;
+    try {
+      setStatus("Loading constituents…");
+      await loadConstituents();
+      document.getElementById("btnRefresh").disabled = false;
+    } catch (e) {
+      setStatus("Error: " + e.message);
+    }
+    document.getElementById("btnLoad").disabled = false;
+  });
+
+  document.getElementById("btnRefresh").addEventListener("click", async () => {
+    document.getElementById("btnRefresh").disabled = true;
+    setProg(0);
+    try {
+      if (!constituents.length) await loadConstituents();
+      setStatus("Downloading prices (Yahoo)…");
+      await loadAllPrices();
+      setStatus("Computing tables…");
+      renderAll();
+      setStatus("Done. " + seriesMap.size + " tickers with data.");
+    } catch (e) {
+      setStatus("Error: " + e.message);
+    }
+    document.getElementById("btnRefresh").disabled = false;
+  });
+
+  document.getElementById("start").addEventListener("change", () => {
+    preset = "custom";
+    document.querySelectorAll(".preset").forEach((x) => x.classList.remove("on"));
+    if (seriesMap.size) renderAll();
+  });
+  document.getElementById("end").addEventListener("change", () => {
+    preset = "custom";
+    document.querySelectorAll(".preset").forEach((x) => x.classList.remove("on"));
+    if (seriesMap.size) renderAll();
+  });
+
+  // init dates YTD
+  const end = new Date();
+  document.getElementById("end").value = iso(end);
+  document.getElementById("start").value = iso(startOfYear(end));
+  document.querySelector('.preset[data-p="ytd"]').classList.add("on");
+})();
+  </script>
+</body>
+</html>
