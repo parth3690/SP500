@@ -1,10 +1,49 @@
-import Dashboard from "@/components/Dashboard";
+"use client";
+
+import { useState } from "react";
+import dynamic from "next/dynamic";
+import clsx from "clsx";
+
+const Dashboard = dynamic(() => import("@/components/Dashboard"), { ssr: false });
+const MarketIndicators = dynamic(() => import("@/components/MarketIndicators"), { ssr: false });
+const MultibaggerScanner = dynamic(() => import("@/components/MultibaggerScanner"), { ssr: false });
+
+type AppTab = "sp500" | "indicators" | "multibagger";
+
+const TABS: { id: AppTab; label: string }[] = [
+  { id: "sp500", label: "S&P 500 Dashboard" },
+  { id: "indicators", label: "Market Indicators" },
+  { id: "multibagger", label: "US Multibagger Scanner" },
+];
 
 export default function Page() {
+  const [tab, setTab] = useState<AppTab>("sp500");
+
   return (
-    <main className="min-h-screen">
-      <Dashboard />
+    <main className="min-h-screen bg-slate-950 text-slate-100">
+      <nav className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/95 backdrop-blur">
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-2 px-4 py-3">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={clsx(
+                "rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                tab === t.id
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-300 hover:bg-slate-800 hover:text-slate-100",
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {tab === "sp500" ? <Dashboard /> : null}
+      {tab === "indicators" ? <MarketIndicators /> : null}
+      {tab === "multibagger" ? <MultibaggerScanner /> : null}
     </main>
   );
 }
-

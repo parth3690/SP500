@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -119,5 +119,19 @@ export async function fetchResearch(
 
   const text = await fetchApi(url.toString());
   return parseJson<ResearchData>(text, 200);
+}
+
+export async function fetchMultibagger(
+  ticker: string,
+  params?: { deep?: boolean; refresh?: boolean },
+): Promise<MultibaggerResponse> {
+  const base = apiBaseUrl();
+  const sym = ticker.trim().toUpperCase();
+  const url = new URL(`${base}/api/multibagger/${encodeURIComponent(sym)}`);
+  if (params?.deep === true) url.searchParams.set("deep", "true");
+  if (params?.refresh === true) url.searchParams.set("refresh", "true");
+
+  const text = await fetchApi(url.toString());
+  return parseJson<MultibaggerResponse>(text, 200);
 }
 

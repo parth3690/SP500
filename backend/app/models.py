@@ -99,3 +99,44 @@ class OverboughtResponse(BaseModel):
     stocks: list[OverboughtRow]
     meta: dict[str, Any]
 
+
+class MultibaggerCriterion(BaseModel):
+    id: str
+    name: str
+    threshold: str
+    valueDisplay: Optional[str] = None
+    status: str = Field(..., description="'pass' | 'fail' | 'skip'")
+    soft: bool = False
+
+
+class MultibaggerMetrics(BaseModel):
+    marketCap: Optional[float] = None
+    pe: Optional[float] = None
+    peg: Optional[float] = None
+    roe: Optional[float] = None
+    roic: Optional[float] = None
+    debtToEquity: Optional[float] = None
+    insider: Optional[float] = None
+    revGrowth: Optional[float] = None
+    earnGrowth: Optional[float] = None
+    opMargin: Optional[float] = None
+    priceToSales: Optional[float] = None
+    evEbitda: Optional[float] = None
+
+
+class MultibaggerResponse(BaseModel):
+    asOf: datetime
+    ticker: str
+    name: str
+    sector: str
+    deep: bool
+    metrics: MultibaggerMetrics
+    sectorPeMedian: Optional[float] = None
+    nGreen: int
+    nTotal: int
+    passedAll: bool
+    green: list[str]
+    fails: list[str]
+    skipped: list[str]
+    criteria: list[MultibaggerCriterion]
+

@@ -196,3 +196,42 @@ export type ResearchData = {
   }[];
 };
 
+export type MultibaggerCriterion = {
+  id: string;
+  name: string;
+  threshold: string;
+  valueDisplay: string | null;
+  status: "pass" | "fail" | "skip";
+  soft: boolean;
+};
+
+export type MultibaggerResponse = {
+  asOf: string;
+  ticker: string;
+  name: string;
+  sector: string;
+  deep: boolean;
+  metrics: {
+    marketCap: number | null;
+    pe: number | null;
+    peg: number | null;
+    roe: number | null;
+    roic: number | null;
+    debtToEquity: number | null;
+    insider: number | null;
+    revGrowth: number | null;
+    earnGrowth: number | null;
+    opMargin: number | null;
+    priceToSales: number | null;
+    evEbitda: number | null;
+  };
+  sectorPeMedian: number | null;
+  nGreen: number;
+  nTotal: number;
+  passedAll: boolean;
+  green: string[];
+  fails: string[];
+  skipped: string[];
+  criteria: MultibaggerCriterion[];
+};
+

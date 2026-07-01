@@ -18,10 +18,11 @@ from .models import (
     CrossoverRow, CrossoversResponse,
     OversoldRow, OversoldResponse,
     OverboughtRow, OverboughtResponse,
+    MultibaggerResponse,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
-    PRICE_DATA_CACHE, MOVE_FINDER_CACHE,
+    PRICE_DATA_CACHE, MOVE_FINDER_CACHE, MULTIBAGGER_CACHE,
     cache_get, cache_set,
     clear_research_and_price_caches,
 )
@@ -37,6 +38,7 @@ from .services.rsi_scan import (
 )
 from .services.prices import fetch_close_prices
 from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
+from .services.multibagger import scan_ticker
 
 load_dotenv()
 
@@ -616,3 +618,33 @@ async def move_finder(
     )
     cache_set(MOVE_FINDER_CACHE, cache_key, payload)
     return payload
+
+
+@app.get("/api/multibagger/{ticker}", response_model=MultibaggerResponse)
+async def multibagger_scan(
+    ticker: str,
+    deep: bool = Query(False, description="Use multi-year ROE / CAGR from financial statements"),
+    refresh: bool = Query(False),
+) -> MultibaggerResponse:
+    """Evaluate one US ticker against the multibagger-style fundamental checklist."""
+    sym = normalize_yahoo_ticker(ticker.strip())
+    if not sym:
+        raise HTTPException(status_code=400, detail="Ticker is required")
+
+    cache_key = ("multibagger", sym, deep)
+    if not refresh:
+        cached = cache_get(MULTIBAGGER_CACHE, cache_key)
+        if cached is not None:
+            return MultibaggerResponse(**cached)
+
+    try:
+        payload = await run_in_threadpool(scan_ticker, sym, deep=deep)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Scan failed: {e}") from e
+
+    cache_set(MULTIBAGGER_CACHE, cache_key, payload)
+    return MultibaggerResponse(**payload)
