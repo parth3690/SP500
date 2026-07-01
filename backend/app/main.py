@@ -3,15 +3,19 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 import os
+from pathlib import Path
 from typing import Any, Optional
+
+from dotenv import load_dotenv
+
+# Load backend/.env before any service reads os.environ (keys stay server-side only).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import PlainTextResponse, Response
 from starlette.concurrency import run_in_threadpool
-
-from dotenv import load_dotenv
 
 from .models import (
     Constituent, MoversResponse, MoverRow, SectorSummaryRow,
@@ -41,8 +45,6 @@ from .services.prices import fetch_close_prices
 from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
 from .services.multibagger import scan_ticker
 from .services.market_conditions import fetch_all_market_conditions
-
-load_dotenv()
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
 MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", "366"))

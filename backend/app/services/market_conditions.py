@@ -10,8 +10,11 @@ from typing import Any, Optional
 import httpx
 import yfinance as yf
 
-FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+
+
+def _fred_api_key() -> str:
+    return os.environ.get("FRED_API_KEY", "").strip()
 
 MANUAL_ENV_KEYS = {
     "cb_consumer_confidence": "MARKET_cb_consumer_confidence",
@@ -36,11 +39,11 @@ def _fred_series(
     limit: Optional[int] = None,
     sort_order: str = "asc",
 ) -> list[tuple[str, float]]:
-    if not FRED_API_KEY:
+    if not _fred_api_key():
         raise RuntimeError("FRED_API_KEY not set")
     params: dict[str, str] = {
         "series_id": series_id,
-        "api_key": FRED_API_KEY,
+        "api_key": _fred_api_key(),
         "file_type": "json",
         "sort_order": sort_order,
     }
@@ -223,7 +226,7 @@ def fetch_all_market_conditions() -> dict[str, Any]:
     warnings: list[str] = []
     results: dict[str, dict[str, Any]] = {}
 
-    fred_ok = bool(FRED_API_KEY)
+    fred_ok = bool(_fred_api_key())
     if not fred_ok:
         warnings.append("FRED_API_KEY not set — yield curve, SLOOS, and valuation z-score will be skipped.")
 
