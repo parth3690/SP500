@@ -270,3 +270,28 @@ export function mergeImportedConditions(
     return merged;
   });
 }
+
+export function applyFetchedConditions(
+  conditions: RuntimeCondition[],
+  fetched: Array<{
+    id: string;
+    value: string | number | null;
+    state: ConditionState;
+    fetched?: boolean;
+    note?: string | null;
+  }>,
+): RuntimeCondition[] {
+  const byId = new Map(fetched.map((r) => [r.id, r]));
+  return conditions.map((c) => {
+    const row = byId.get(c.id);
+    if (!row || !row.fetched) return c;
+    const next: RuntimeCondition = {
+      ...c,
+      value: row.value,
+      state: row.state,
+      manualState: false,
+      notes: row.note ? String(row.note) : c.notes,
+    };
+    return next;
+  });
+}

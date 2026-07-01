@@ -2,8 +2,10 @@
 
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { fetchMarketConditions } from "@/lib/api";
 import {
   HISTORICAL_PEAKS,
+  applyFetchedConditions,
   cloneSeedConditions,
   computeSummary,
   mergeImportedConditions,
@@ -45,6 +47,9 @@ export default function MarketIndicators() {
   const [addCategory, setAddCategory] = useState("");
   const [addThreshold, setAddThreshold] = useState("");
   const [addSource, setAddSource] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchMessage, setFetchMessage] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const summary = useMemo(() => computeSummary(conditions), [conditions]);
@@ -74,6 +79,25 @@ export default function MarketIndicators() {
 
   const onStateChange = (id: string, state: ConditionState) => {
     updateCondition(id, { state, manualState: true });
+  };
+
+  const onFetchAll = async (refresh = false) => {
+    setFetching(true);
+    setFetchError(null);
+    setFetchMessage(null);
+    try {
+      const data = await fetchMarketConditions({ refresh });
+      setConditions((prev) => applyFetchedConditions(prev, data.conditions));
+      const msg = `Updated ${data.meta.fetchedCount} signal(s) · ${data.meta.unknownCount} still unknown`;
+      setFetchMessage(msg);
+      if (data.meta.warnings.length > 0 && !data.meta.fredConfigured) {
+        setFetchError("Set FRED_API_KEY in backend/.env for yield curve, SLOOS, and valuation z-score.");
+      }
+    } catch (e) {
+      setFetchError(e instanceof Error ? e.message : "Fetch failed");
+    } finally {
+      setFetching(false);
+    }
   };
 
   const exportJson = () => {
@@ -173,7 +197,28 @@ export default function MarketIndicators() {
         </div>
       </section>
 
-      <div className="mb-6 flex flex-wrap gap-2">
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={fetching}
+          className={clsx(
+            "rounded-md px-4 py-2 text-sm font-semibold",
+            fetching
+              ? "cursor-wait bg-slate-700 text-slate-400"
+              : "bg-emerald-600 text-white hover:bg-emerald-500",
+          )}
+          onClick={() => void onFetchAll(false)}
+        >
+          {fetching ? "Fetching…" : "Fetch data"}
+        </button>
+        <button
+          type="button"
+          disabled={fetching}
+          className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50"
+          onClick={() => void onFetchAll(true)}
+        >
+          Force refresh
+        </button>
         <button type="button" className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm hover:bg-slate-800" onClick={exportJson}>
           Export JSON
         </button>
@@ -203,6 +248,9 @@ export default function MarketIndicators() {
           + Add condition
         </button>
       </div>
+
+      {fetchMessage ? <p className="mb-4 text-sm text-emerald-300">{fetchMessage}</p> : null}
+      {fetchError ? <p className="mb-4 text-sm text-amber-300">{fetchError}</p> : null}
 
       {showAdd && (
         <form onSubmit={onAdd} className="mb-6 grid gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4 sm:grid-cols-2 lg:grid-cols-5">

@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -133,5 +133,14 @@ export async function fetchMultibagger(
 
   const text = await fetchApi(url.toString());
   return parseJson<MultibaggerResponse>(text, 200);
+}
+
+export async function fetchMarketConditions(params?: { refresh?: boolean }): Promise<MarketConditionsFetchResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/market-conditions/fetch`);
+  if (params?.refresh === true) url.searchParams.set("refresh", "true");
+
+  const text = await fetchApi(url.toString());
+  return parseJson<MarketConditionsFetchResponse>(text, 200);
 }
 

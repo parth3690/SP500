@@ -19,10 +19,11 @@ from .models import (
     OversoldRow, OversoldResponse,
     OverboughtRow, OverboughtResponse,
     MultibaggerResponse,
+    MarketConditionsFetchResponse,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
-    PRICE_DATA_CACHE, MOVE_FINDER_CACHE, MULTIBAGGER_CACHE,
+    PRICE_DATA_CACHE, MOVE_FINDER_CACHE, MULTIBAGGER_CACHE, MARKET_CONDITIONS_CACHE,
     cache_get, cache_set,
     clear_research_and_price_caches,
 )
@@ -39,6 +40,7 @@ from .services.rsi_scan import (
 from .services.prices import fetch_close_prices
 from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
 from .services.multibagger import scan_ticker
+from .services.market_conditions import fetch_all_market_conditions
 
 load_dotenv()
 
@@ -648,3 +650,21 @@ async def multibagger_scan(
 
     cache_set(MULTIBAGGER_CACHE, cache_key, payload)
     return MultibaggerResponse(**payload)
+
+
+@app.get("/api/market-conditions/fetch", response_model=MarketConditionsFetchResponse)
+async def market_conditions_fetch(refresh: bool = Query(False)) -> MarketConditionsFetchResponse:
+    """Fetch live readings for all market peak signpost criteria (best effort)."""
+    cache_key = "market_conditions_fetch"
+    if not refresh:
+        cached = cache_get(MARKET_CONDITIONS_CACHE, cache_key)
+        if cached is not None:
+            return MarketConditionsFetchResponse(**cached)
+
+    try:
+        payload = await run_in_threadpool(fetch_all_market_conditions)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Market conditions fetch failed: {e}") from e
+
+    cache_set(MARKET_CONDITIONS_CACHE, cache_key, payload)
+    return MarketConditionsFetchResponse(**payload)

@@ -140,3 +140,17 @@ class MultibaggerResponse(BaseModel):
     skipped: list[str]
     criteria: list[MultibaggerCriterion]
 
+
+class MarketConditionFetchRow(BaseModel):
+    id: str
+    value: Optional[Any] = None
+    state: str = Field(..., description="'triggered' | 'not_triggered' | 'unknown'")
+    fetched: bool = False
+    note: Optional[str] = None
+
+
+class MarketConditionsFetchResponse(BaseModel):
+    asOf: datetime
+    conditions: list[MarketConditionFetchRow]
+    meta: dict[str, Any]
+

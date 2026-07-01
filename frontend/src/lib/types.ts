@@ -235,3 +235,22 @@ export type MultibaggerResponse = {
   criteria: MultibaggerCriterion[];
 };
 
+export type MarketConditionFetchRow = {
+  id: string;
+  value: string | number | null;
+  state: "triggered" | "not_triggered" | "unknown";
+  fetched: boolean;
+  note?: string | null;
+};
+
+export type MarketConditionsFetchResponse = {
+  asOf: string;
+  conditions: MarketConditionFetchRow[];
+  meta: {
+    fredConfigured: boolean;
+    fetchedCount: number;
+    unknownCount: number;
+    warnings: string[];
+  };
+};
+
