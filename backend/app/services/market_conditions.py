@@ -4,13 +4,16 @@ import datetime as dt
 import os
 import re
 import statistics
+from io import StringIO
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
+import pandas as pd
 import yfinance as yf
 
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+FRED_CSV_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 
 def _fred_api_key() -> str:
@@ -39,30 +42,49 @@ def _fred_series(
     limit: Optional[int] = None,
     sort_order: str = "asc",
 ) -> list[tuple[str, float]]:
-    if not _fred_api_key():
-        raise RuntimeError("FRED_API_KEY not set")
-    params: dict[str, str] = {
-        "series_id": series_id,
-        "api_key": _fred_api_key(),
-        "file_type": "json",
-        "sort_order": sort_order,
-    }
-    if start:
-        params["observation_start"] = start
-    if limit is not None:
-        params["limit"] = str(limit)
-    with httpx.Client(timeout=30) as client:
-        r = client.get(FRED_BASE, params=params)
-        r.raise_for_status()
-        payload = r.json()
-    out: list[tuple[str, float]] = []
-    for obs in payload.get("observations", []):
-        v = obs.get("value", ".")
-        if v not in (".", "", None):
+    if _fred_api_key():
+        params: dict[str, str] = {
+            "series_id": series_id,
+            "api_key": _fred_api_key(),
+            "file_type": "json",
+            "sort_order": sort_order,
+        }
+        if start:
+            params["observation_start"] = start
+        if limit is not None:
+            params["limit"] = str(limit)
+        with httpx.Client(timeout=30) as client:
+            r = client.get(FRED_BASE, params=params)
+            r.raise_for_status()
+            payload = r.json()
+        out: list[tuple[str, float]] = []
+        for obs in payload.get("observations", []):
+            v = obs.get("value", ".")
+            if v not in (".", "", None):
+                try:
+                    out.append((obs["date"], float(v)))
+                except ValueError:
+                    pass
+    else:
+        with httpx.Client(timeout=30) as client:
+            r = client.get(FRED_CSV_BASE, params={"id": series_id})
+            r.raise_for_status()
+        df = pd.read_csv(StringIO(r.text))
+        if "observation_date" not in df.columns or series_id not in df.columns:
+            return []
+        if start:
+            df = df[df["observation_date"] >= start]
+        out = []
+        for _, row in df.iterrows():
             try:
-                out.append((obs["date"], float(v)))
-            except ValueError:
-                pass
+                v = float(row[series_id])
+            except (TypeError, ValueError):
+                continue
+            out.append((str(row["observation_date"]), v))
+        if sort_order == "desc":
+            out = list(reversed(out))
+        if limit is not None:
+            out = out[:limit]
     if sort_order == "desc":
         out.reverse()
     return out
@@ -90,14 +112,26 @@ def _fetch_multpl_pe() -> dict[str, float]:
     except Exception:
         return {}
     out: dict[str, float] = {}
-    for m in re.finditer(
-        r"([A-Z][a-z]{2})\s+\d+,\s+(\d{4})</td>\s*<td[^>]*>\s*([\d.]+)",
-        html,
-    ):
-        mon, year, val = m.group(1), m.group(2), m.group(3)
+    for chunk in html.split("<tr"):
+        m_date = re.search(r"([A-Z][a-z]{2})\s+\d+,\s+(\d{4})</td>", chunk)
+        if not m_date:
+            continue
+        tds = re.findall(r"<td[^>]*>(.*?)</td>", chunk, re.DOTALL)
+        if len(tds) < 2:
+            continue
+        val_text = re.sub(r"<[^>]+>", "", tds[1])
+        val_text = val_text.replace("\n", " ").strip()
+        m_num = re.search(r"([\d.]+)", val_text)
+        if not m_num:
+            continue
+        try:
+            val = float(m_num.group(1))
+        except ValueError:
+            continue
+        mon, year = m_date.group(1), m_date.group(2)
         try:
             month_num = dt.datetime.strptime(mon, "%b").month
-            out[f"{year}-{month_num:02d}"] = float(val)
+            out[f"{year}-{month_num:02d}"] = val
         except ValueError:
             continue
     return out
@@ -201,6 +235,104 @@ def _fetch_low_minus_high_pe_6m() -> dict[str, Any]:
         return {"value": None, "state": "unknown", "fetched": False, "note": str(exc)}
 
 
+def _download_close(symbol: str, *, period: str = "1y") -> Optional[pd.Series]:
+    try:
+        hist = yf.Ticker(symbol).history(period=period, auto_adjust=True)
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            return None
+        closes = hist["Close"].dropna()
+        return closes if len(closes) > 1 else None
+    except Exception:
+        return None
+
+
+def _fetch_spy_below_200dma() -> dict[str, Any]:
+    closes = _download_close("SPY", period="1y")
+    if closes is None or len(closes) < 200:
+        return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load enough SPY history"}
+    latest = float(closes.iloc[-1])
+    sma200 = float(closes.rolling(200).mean().iloc[-1])
+    triggered = latest < sma200
+    return {
+        "value": round((latest / sma200 - 1) * 100, 2),
+        "state": "triggered" if triggered else "not_triggered",
+        "fetched": True,
+        "note": f"SPY {latest:.2f} vs 200DMA {sma200:.2f}; value is % above/below 200DMA",
+    }
+
+
+def _fetch_spy_50_below_200dma() -> dict[str, Any]:
+    closes = _download_close("SPY", period="1y")
+    if closes is None or len(closes) < 200:
+        return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load enough SPY history"}
+    sma50 = float(closes.rolling(50).mean().iloc[-1])
+    sma200 = float(closes.rolling(200).mean().iloc[-1])
+    triggered = sma50 < sma200
+    return {
+        "value": round((sma50 / sma200 - 1) * 100, 2),
+        "state": "triggered" if triggered else "not_triggered",
+        "fetched": True,
+        "note": f"SPY 50DMA {sma50:.2f} vs 200DMA {sma200:.2f}",
+    }
+
+
+def _fetch_spy_3m_drawdown() -> dict[str, Any]:
+    closes = _download_close("SPY", period="6mo")
+    if closes is None or len(closes) < 50:
+        return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load enough SPY history"}
+    recent = closes.iloc[-63:] if len(closes) >= 63 else closes
+    dd = (float(recent.iloc[-1]) / float(recent.max()) - 1) * 100
+    triggered = dd <= -8
+    return {
+        "value": round(dd, 2),
+        "state": "triggered" if triggered else "not_triggered",
+        "fetched": True,
+        "note": "SPY drawdown from 3-month high",
+    }
+
+
+def _fetch_vix_elevated() -> dict[str, Any]:
+    closes = _download_close("^VIX", period="3mo")
+    if closes is None:
+        return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load VIX"}
+    latest = float(closes.iloc[-1])
+    triggered = latest > 25
+    return {
+        "value": round(latest, 2),
+        "state": "triggered" if triggered else "not_triggered",
+        "fetched": True,
+        "note": "VIX latest close",
+    }
+
+
+def _fetch_high_yield_spread() -> dict[str, Any]:
+    data = _fred_series("BAMLH0A0HYM2", start=(dt.date.today() - dt.timedelta(days=120)).isoformat())
+    if not data:
+        return {"value": None, "state": "unknown", "fetched": False, "note": "No high-yield OAS data"}
+    latest = data[-1][1]
+    triggered = latest > 5
+    return {
+        "value": round(latest, 2),
+        "state": "triggered" if triggered else "not_triggered",
+        "fetched": True,
+        "note": "ICE BofA US High Yield OAS",
+    }
+
+
+def _fetch_sahm_rule() -> dict[str, Any]:
+    data = _fred_series("SAHMREALTIME", start=(dt.date.today() - dt.timedelta(days=730)).isoformat())
+    if not data:
+        return {"value": None, "state": "unknown", "fetched": False, "note": "No Sahm rule data"}
+    latest = data[-1][1]
+    triggered = latest >= 0.5
+    return {
+        "value": round(latest, 2),
+        "state": "triggered" if triggered else "not_triggered",
+        "fetched": True,
+        "note": "Sahm recession indicator, real-time",
+    }
+
+
 def _fetch_manual(condition_id: str, predicate) -> dict[str, Any]:
     val = _read_manual(condition_id)
     if val is None:
@@ -228,32 +360,30 @@ def fetch_all_market_conditions() -> dict[str, Any]:
 
     fred_ok = bool(_fred_api_key())
     if not fred_ok:
-        warnings.append("FRED_API_KEY not set — yield curve, SLOOS, and valuation z-score will be skipped.")
+        warnings.append("FRED_API_KEY not set — using public FRED CSV fallback where available.")
 
-    if fred_ok:
-        for cid, fn in (
-            ("inverted_curve", _fetch_inverted_curve),
-            ("sloos_tightening", _fetch_sloos),
-            ("valuation_z", _fetch_valuation_z),
-        ):
-            try:
-                results[cid] = fn()
-            except Exception as exc:
-                results[cid] = {
-                    "value": None,
-                    "state": "unknown",
-                    "fetched": False,
-                    "note": str(exc),
-                }
-                warnings.append(f"{cid}: {exc}")
-    else:
-        for cid in ("inverted_curve", "sloos_tightening", "valuation_z"):
+    public_fetchers = (
+        ("inverted_curve", _fetch_inverted_curve),
+        ("sloos_tightening", _fetch_sloos),
+        ("valuation_z", _fetch_valuation_z),
+        ("high_yield_spread", _fetch_high_yield_spread),
+        ("sahm_rule", _fetch_sahm_rule),
+        ("spy_below_200dma", _fetch_spy_below_200dma),
+        ("spy_50_below_200dma", _fetch_spy_50_below_200dma),
+        ("spy_3m_drawdown", _fetch_spy_3m_drawdown),
+        ("vix_elevated", _fetch_vix_elevated),
+    )
+    for cid, fn in public_fetchers:
+        try:
+            results[cid] = fn()
+        except Exception as exc:
             results[cid] = {
                 "value": None,
                 "state": "unknown",
                 "fetched": False,
-                "note": "FRED_API_KEY not configured",
+                "note": str(exc),
             }
+            warnings.append(f"{cid}: {exc}")
 
     try:
         results["low_minus_high_pe_6m"] = _fetch_low_minus_high_pe_6m()
@@ -280,6 +410,10 @@ def fetch_all_market_conditions() -> dict[str, Any]:
             warnings.append(row.get("note") or f"{cid}: manual value not set")
 
     condition_ids = [
+        "spy_below_200dma",
+        "spy_50_below_200dma",
+        "spy_3m_drawdown",
+        "vix_elevated",
         "cb_consumer_confidence",
         "cb_net_pct_stocks_higher",
         "sell_side_indicator",
@@ -288,19 +422,24 @@ def fetch_all_market_conditions() -> dict[str, Any]:
         "valuation_z",
         "low_minus_high_pe_6m",
         "inverted_curve",
+        "high_yield_spread",
         "credit_stress_indicator",
         "sloos_tightening",
+        "sahm_rule",
     ]
 
     rows = []
     fetched_count = 0
     unknown_count = 0
+    triggered_count = 0
     for cid in condition_ids:
         row = results.get(cid, {"value": None, "state": "unknown", "fetched": False})
         if row.get("fetched"):
             fetched_count += 1
         if row.get("state") == "unknown":
             unknown_count += 1
+        if row.get("state") == "triggered":
+            triggered_count += 1
         rows.append(
             {
                 "id": cid,
@@ -318,6 +457,21 @@ def fetch_all_market_conditions() -> dict[str, Any]:
             "fredConfigured": fred_ok,
             "fetchedCount": fetched_count,
             "unknownCount": unknown_count,
+            "triggeredCount": triggered_count,
+            "coveragePct": round((fetched_count / len(condition_ids)) * 100) if condition_ids else 0,
+            "riskLevel": (
+                "Unknown"
+                if fetched_count == 0
+                else (
+                    "Extreme"
+                    if (triggered_count / max(fetched_count, 1)) >= 0.70
+                    else "Elevated"
+                    if (triggered_count / max(fetched_count, 1)) >= 0.50
+                    else "Watch"
+                    if (triggered_count / max(fetched_count, 1)) >= 0.30
+                    else "Normal"
+                )
+            ),
             "warnings": warnings,
         },
     }

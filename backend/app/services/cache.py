@@ -30,6 +30,12 @@ MULTIBAGGER_CACHE: TTLCache = TTLCache(maxsize=64, ttl=MULTIBAGGER_TTL_SECONDS)
 MARKET_CONDITIONS_TTL_SECONDS = int(os.getenv("MARKET_CONDITIONS_TTL_SECONDS", "900"))
 MARKET_CONDITIONS_CACHE: TTLCache = TTLCache(maxsize=4, ttl=MARKET_CONDITIONS_TTL_SECONDS)
 
+ALPHA_TTL_SECONDS = int(os.getenv("ALPHA_TTL_SECONDS", "900"))
+ALPHA_CACHE: TTLCache = TTLCache(maxsize=8, ttl=ALPHA_TTL_SECONDS)
+
+VALUATION_TTL_SECONDS = int(os.getenv("VALUATION_TTL_SECONDS", "86400"))
+VALUATION_CACHE: TTLCache = TTLCache(maxsize=1024, ttl=VALUATION_TTL_SECONDS)
+
 # Shared S&P 500 price data cache — avoids redundant Yahoo downloads
 # across movers, crossovers, and RSI endpoints
 PRICE_DATA_TTL_SECONDS = int(os.getenv("PRICE_DATA_TTL_SECONDS", "900"))
@@ -64,5 +70,6 @@ def clear_all_caches() -> None:
         CROSSOVERS_CACHE.clear()
         RSI_SCAN_CACHE.clear()
         MOVE_FINDER_CACHE.clear()
+        ALPHA_CACHE.clear()
+        VALUATION_CACHE.clear()
         CONSTITUENTS_CACHE.clear()
-

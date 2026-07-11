@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -16,6 +16,20 @@ function parseJson<T>(text: string, status: number): T {
 
 async function fetchApi(url: string): Promise<string> {
   const res = await fetch(url, { cache: "no-store" });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(text ? `${res.status}: ${text}` : `API error ${res.status}`);
+  }
+  return text;
+}
+
+async function fetchApiJson(url: string, body: unknown): Promise<string> {
+  const res = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   const text = await res.text().catch(() => "");
   if (!res.ok) {
     throw new Error(text ? `${res.status}: ${text}` : `API error ${res.status}`);
@@ -144,3 +158,52 @@ export async function fetchMarketConditions(params?: { refresh?: boolean }): Pro
   return parseJson<MarketConditionsFetchResponse>(text, 200);
 }
 
+export async function fetchAlphaCandidates(params?: {
+  limit?: number;
+  minScore?: number;
+  sector?: string;
+  maxBeta?: number;
+  riskMode?: "balanced" | "aggressive" | "defensive";
+  regime?: "auto" | "risk_on" | "neutral" | "risk_off";
+  enrichTop?: number;
+  refresh?: boolean;
+}): Promise<AlphaCandidatesResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/alpha-candidates`);
+  if (params?.limit != null) url.searchParams.set("limit", String(params.limit));
+  if (params?.minScore != null) url.searchParams.set("minScore", String(params.minScore));
+  if (params?.sector) url.searchParams.set("sector", params.sector);
+  if (params?.maxBeta != null) url.searchParams.set("maxBeta", String(params.maxBeta));
+  if (params?.riskMode) url.searchParams.set("riskMode", params.riskMode);
+  if (params?.regime) url.searchParams.set("regime", params.regime);
+  if (params?.enrichTop != null) url.searchParams.set("enrichTop", String(params.enrichTop));
+  if (params?.refresh === true) url.searchParams.set("refresh", "true");
+
+  const text = await fetchApi(url.toString());
+  return parseJson<AlphaCandidatesResponse>(text, 200);
+}
+
+export async function fetchAlphaWatchlist(params: {
+  tickers: string[];
+  limit?: number;
+  minScore?: number;
+  maxBeta?: number;
+  riskMode?: "balanced" | "aggressive" | "defensive";
+  regime?: "auto" | "risk_on" | "neutral" | "risk_off";
+  enrichTop?: number;
+  refresh?: boolean;
+}): Promise<AlphaCandidatesResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/alpha-watchlist`);
+  const text = await fetchApiJson(url.toString(), {
+    tickers: params.tickers,
+    limit: params.limit ?? 50,
+    minScore: params.minScore ?? 0,
+    maxBeta: params.maxBeta,
+    riskMode: params.riskMode ?? "balanced",
+    regime: params.regime ?? "auto",
+    enrichTop: params.enrichTop ?? 20,
+    refresh: params.refresh === true,
+  });
+  return parseJson<AlphaCandidatesResponse>(text, 200);
+}

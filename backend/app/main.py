@@ -24,10 +24,13 @@ from .models import (
     OverboughtRow, OverboughtResponse,
     MultibaggerResponse,
     MarketConditionsFetchResponse,
+    AlphaCandidatesResponse,
+    AlphaWatchlistRequest,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
     PRICE_DATA_CACHE, MOVE_FINDER_CACHE, MULTIBAGGER_CACHE, MARKET_CONDITIONS_CACHE,
+    ALPHA_CACHE,
     cache_get, cache_set,
     clear_research_and_price_caches,
 )
@@ -42,9 +45,11 @@ from .services.rsi_scan import (
     compute_rsi_scan_daily_overbought,
 )
 from .services.prices import fetch_close_prices
+from .services.valuations import attach_pe_metrics, fetch_pe_metrics
 from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
 from .services.multibagger import scan_ticker
 from .services.market_conditions import fetch_all_market_conditions
+from .services.alpha import alpha_universe_tickers, compute_alpha_candidates
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
 MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", "366"))
@@ -220,6 +225,43 @@ def _ranked(rows: list[dict[str, Any]], *, descending: bool, limit: int) -> list
     return out
 
 
+def _custom_alpha_constituents(
+    tickers: list[str],
+    reference: list[Constituent],
+) -> list[Constituent]:
+    by_display = {c.ticker.upper(): c for c in reference}
+    by_yahoo = {c.yahooTicker.upper(): c for c in reference}
+    out: list[Constituent] = []
+    seen: set[str] = set()
+
+    for raw in tickers:
+        display = raw.strip().upper()
+        if not display:
+            continue
+        yahoo = normalize_yahoo_ticker(display)
+        key = yahoo.upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        existing = by_display.get(display) or by_yahoo.get(key)
+        if existing is not None:
+            out.append(existing)
+            continue
+
+        out.append(
+            Constituent(
+                ticker=display,
+                yahooTicker=yahoo,
+                companyName=display,
+                sector="Custom Watchlist",
+                subIndustry=None,
+            )
+        )
+
+    return out
+
+
 @app.get("/api/movers", response_model=MoversResponse)
 async def movers(
     start: Optional[date] = Query(None),
@@ -258,6 +300,16 @@ async def movers(
     all_rows = None
     if include_all:
         all_rows = _ranked(rows, descending=True, limit=len(rows))
+
+    rows_for_pe = all_rows if all_rows is not None else [*gainers, *losers]
+    pe_metrics = await run_in_threadpool(
+        fetch_pe_metrics,
+        list({str(r["ticker"]).upper() for r in rows_for_pe}),
+    )
+    attach_pe_metrics(gainers, pe_metrics)
+    attach_pe_metrics(losers, pe_metrics)
+    if all_rows is not None:
+        attach_pe_metrics(all_rows, pe_metrics)
 
     return MoversResponse(
         start=start_date,
@@ -557,6 +609,8 @@ async def movers_csv(
             "Current Price Date",
             "Past Price",
             "Past Price Date",
+            "Trailing P/E",
+            "Forward P/E",
             "% Change",
         ]
     )
@@ -571,6 +625,8 @@ async def movers_csv(
                 r.currentPriceDate.isoformat(),
                 f"{r.pastPrice:.4f}",
                 r.pastPriceDate.isoformat(),
+                "" if r.trailingPE is None else f"{r.trailingPE:.4f}",
+                "" if r.forwardPE is None else f"{r.forwardPE:.4f}",
                 f"{r.pctChange:.4f}",
             ]
         )
@@ -622,6 +678,119 @@ async def move_finder(
     )
     cache_set(MOVE_FINDER_CACHE, cache_key, payload)
     return payload
+
+
+@app.get("/api/alpha-candidates", response_model=AlphaCandidatesResponse)
+async def alpha_candidates(
+    limit: int = Query(50, ge=5, le=150),
+    min_score: float = Query(55.0, ge=0.0, le=100.0, alias="minScore"),
+    sector: Optional[str] = Query(None),
+    max_beta: Optional[float] = Query(None, ge=0.1, le=5.0, alias="maxBeta"),
+    risk_mode: str = Query("balanced", pattern="^(balanced|aggressive|defensive)$", alias="riskMode"),
+    regime: str = Query("auto", pattern="^(auto|risk_on|neutral|risk_off)$"),
+    enrich_top: int = Query(20, ge=0, le=50, alias="enrichTop"),
+    refresh: bool = Query(False),
+) -> AlphaCandidatesResponse:
+    """Rank S&P 500 candidates by lightweight alpha score, relative strength, risk, regime fit, and signal backtests."""
+    sector_value = sector.strip() if sector and sector.strip() else None
+    cache_key = (
+        "alpha_candidates",
+        limit,
+        round(min_score, 2),
+        sector_value,
+        round(max_beta, 2) if max_beta is not None else None,
+        risk_mode,
+        regime,
+        enrich_top,
+    )
+    if not refresh:
+        cached = cache_get(ALPHA_CACHE, cache_key)
+        if cached is not None:
+            return AlphaCandidatesResponse(**cached)
+
+    constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=760)
+    price_key = ("alpha_prices", start_date.isoformat(), end_date.isoformat())
+    close_prices = None if refresh else cache_get(ALPHA_CACHE, price_key)
+    if close_prices is None:
+        tickers = alpha_universe_tickers(constituents_list)
+        close_prices = await run_in_threadpool(fetch_close_prices, tickers, start_date, end_date)
+        if not getattr(close_prices, "empty", True):
+            cache_set(ALPHA_CACHE, price_key, close_prices)
+
+    payload = await run_in_threadpool(
+        compute_alpha_candidates,
+        constituents_list,
+        close_prices,
+        limit=limit,
+        min_score=min_score,
+        sector=sector_value,
+        max_beta=max_beta,
+        risk_mode=risk_mode,
+        regime_override=regime,
+        enrich_top=enrich_top,
+    )
+    if payload.get("meta", {}).get("computed", 0) > 0 or not payload.get("meta", {}).get("warnings"):
+        cache_set(ALPHA_CACHE, cache_key, payload)
+    return AlphaCandidatesResponse(**payload)
+
+
+@app.post("/api/alpha-watchlist", response_model=AlphaCandidatesResponse)
+async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResponse:
+    """Rank a user-supplied watchlist of up to 100 tickers with the same alpha model."""
+    constituents_reference = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+    custom_constituents = _custom_alpha_constituents(request.tickers, constituents_reference)
+    if not custom_constituents:
+        raise HTTPException(status_code=400, detail="At least one valid ticker is required")
+
+    yahoo_tickers = [c.yahooTicker for c in custom_constituents]
+    cache_key = (
+        "alpha_watchlist",
+        tuple(yahoo_tickers),
+        request.limit,
+        round(request.minScore, 2),
+        round(request.maxBeta, 2) if request.maxBeta is not None else None,
+        request.riskMode,
+        request.regime,
+        request.enrichTop,
+    )
+    if not request.refresh:
+        cached = cache_get(ALPHA_CACHE, cache_key)
+        if cached is not None:
+            return AlphaCandidatesResponse(**cached)
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=760)
+    price_tickers = alpha_universe_tickers(custom_constituents)
+    price_key = ("alpha_watchlist_prices", tuple(price_tickers), start_date.isoformat(), end_date.isoformat())
+    close_prices = None if request.refresh else cache_get(ALPHA_CACHE, price_key)
+    if close_prices is None:
+        close_prices = await run_in_threadpool(fetch_close_prices, price_tickers, start_date, end_date)
+        if not getattr(close_prices, "empty", True):
+            cache_set(ALPHA_CACHE, price_key, close_prices)
+
+    payload = await run_in_threadpool(
+        compute_alpha_candidates,
+        custom_constituents,
+        close_prices,
+        limit=min(request.limit, len(custom_constituents)),
+        min_score=request.minScore,
+        sector=None,
+        max_beta=request.maxBeta,
+        risk_mode=request.riskMode,
+        regime_override=request.regime,
+        enrich_top=min(request.enrichTop, len(custom_constituents)),
+    )
+    payload["meta"] = {
+        **payload["meta"],
+        "universe": "watchlist",
+        "requestedTickers": len(request.tickers),
+        "validTickers": len(custom_constituents),
+    }
+    if payload.get("meta", {}).get("computed", 0) > 0 or not payload.get("meta", {}).get("warnings"):
+        cache_set(ALPHA_CACHE, cache_key, payload)
+    return AlphaCandidatesResponse(**payload)
 
 
 @app.get("/api/multibagger/{ticker}", response_model=MultibaggerResponse)

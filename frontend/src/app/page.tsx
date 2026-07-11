@@ -7,17 +7,19 @@ import clsx from "clsx";
 const Dashboard = dynamic(() => import("@/components/Dashboard"), { ssr: false });
 const MarketIndicators = dynamic(() => import("@/components/MarketIndicators"), { ssr: false });
 const MultibaggerScanner = dynamic(() => import("@/components/MultibaggerScanner"), { ssr: false });
+const AlphaCandidates = dynamic(() => import("@/components/AlphaCandidates"), { ssr: false });
 
-type AppTab = "sp500" | "indicators" | "multibagger";
+type AppTab = "alpha" | "sp500" | "indicators" | "multibagger";
 
 const TABS: { id: AppTab; label: string }[] = [
+  { id: "alpha", label: "Alpha Candidates" },
   { id: "sp500", label: "S&P 500 Dashboard" },
   { id: "indicators", label: "Market Indicators" },
   { id: "multibagger", label: "US Multibagger Scanner" },
 ];
 
 export default function Page() {
-  const [tab, setTab] = useState<AppTab>("sp500");
+  const [tab, setTab] = useState<AppTab>("alpha");
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
@@ -41,6 +43,7 @@ export default function Page() {
         </div>
       </nav>
 
+      {tab === "alpha" ? <AlphaCandidates /> : null}
       {tab === "sp500" ? <Dashboard /> : null}
       {tab === "indicators" ? <MarketIndicators /> : null}
       {tab === "multibagger" ? <MultibaggerScanner /> : null}

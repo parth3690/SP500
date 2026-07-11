@@ -24,6 +24,8 @@ class MoverRow(BaseModel):
     pastPrice: float
     pastPriceDate: date
     pctChange: float
+    trailingPE: Optional[float] = None
+    forwardPE: Optional[float] = None
 
 
 class SectorSummaryRow(BaseModel):
@@ -154,3 +156,88 @@ class MarketConditionsFetchResponse(BaseModel):
     conditions: list[MarketConditionFetchRow]
     meta: dict[str, Any]
 
+
+class AlphaSignal(BaseModel):
+    id: str
+    label: str
+    state: str = Field(..., description="'bullish' | 'neutral' | 'bearish'")
+    contribution: float
+    detail: str
+
+
+class AlphaBacktestMetric(BaseModel):
+    signal: str
+    horizonDays: int
+    sampleSize: int
+    winRate: float
+    avgReturn: float
+    medianReturn: float
+    benchmarkAvgReturn: float
+    alphaAvgReturn: float
+
+
+class AlphaTradePlan(BaseModel):
+    action: str = Field(..., description="'BUY' | 'SELL' | 'WATCH' | 'AVOID'")
+    confidence: float
+    horizon: str
+    entry: float
+    buyBelow: Optional[float] = None
+    sellAbove: Optional[float] = None
+    stop: Optional[float] = None
+    target1: Optional[float] = None
+    target2: Optional[float] = None
+    riskReward: Optional[float] = None
+    optionStrategy: Optional[str] = None
+    optionDirection: Optional[str] = None
+    optionStrike: Optional[float] = None
+    optionExpiry: Optional[str] = None
+    optionRationale: Optional[str] = None
+    rationale: str
+
+
+class AlphaCandidateRow(BaseModel):
+    rank: int
+    ticker: str
+    companyName: str
+    sector: str
+    currentPrice: float
+    priceDate: date
+    alphaScore: float
+    technicalScore: float
+    riskAdjustedScore: float
+    expectedReturn20d: float
+    momentum20d: float
+    momentum63d: float
+    rsVsSpy20d: float
+    rsVsSector20d: float
+    sectorStrength20d: float
+    volatility20d: float
+    betaVsSpy: float
+    maxDrawdown63d: float
+    trendState: str
+    factorExposure: str
+    regimeFit: str
+    catalystScore: float
+    revisionScore: float
+    catalystNotes: list[str]
+    tradePlan: AlphaTradePlan
+    signals: list[AlphaSignal]
+    backtests: list[AlphaBacktestMetric]
+
+
+class AlphaCandidatesResponse(BaseModel):
+    asOf: datetime
+    marketRegime: dict[str, Any]
+    candidates: list[AlphaCandidateRow]
+    meta: dict[str, Any]
+
+
+class AlphaWatchlistRequest(BaseModel):
+    tickers: list[str] = Field(..., min_length=1, max_length=100)
+    limit: int = Field(50, ge=1, le=100)
+    minScore: float = Field(0.0, ge=0.0, le=100.0)
+    maxBeta: Optional[float] = Field(None, ge=0.1, le=5.0)
+    riskMode: str = Field("balanced", pattern="^(balanced|aggressive|defensive)$")
+    regime: str = Field("auto", pattern="^(auto|risk_on|neutral|risk_off)$")
+    enrichTop: int = Field(20, ge=0, le=50)
+    refresh: bool = False

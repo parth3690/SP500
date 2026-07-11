@@ -5,8 +5,12 @@ Full-stack web app for S&P 500 analysis featuring real-time market data, technic
 ## Features
 
 - **Dashboard**
-  - Top gainers/losers with filtering, search, sorting, CSV export, charts, and a full heatmap
+  - Top gainers/losers with filtering, search, sorting, trailing/forward P/E, CSV export, charts, and a full heatmap
   - LEAPS radar: weekly/daily oversold & overbought lists with compact option suggestions for each ticker
+- **Alpha Candidates**
+  - Unified ranked alpha score across momentum, relative strength, trend, risk, factor exposure, and market regime
+  - Lightweight signal backtests, SPY/sector relative strength, risk controls, catalyst/revision proxies, and a local watchlist journal
+  - Multiple custom watchlists with up to 100 tickers each, scanned through the same alpha-candidate view
 - **Golden/Death Cross Detection**
   - Highlights stocks where the 50-DMA and 200-DMA are converging or crossing, with a dedicated crossovers table
 - **Deep Research Page (any ticker, not just S&P 500)**
@@ -118,6 +122,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `GET` | `/api/constituents` | S&P 500 constituent list |
 | `GET` | `/api/movers` | Top gainers/losers with `?start=&end=&limit=&includeAll=` |
 | `GET` | `/api/movers.csv` | CSV export of movers |
+| `GET` | `/api/alpha-candidates` | Ranked alpha candidates with filters for score, sector, beta, risk mode, and market regime |
+| `POST` | `/api/alpha-watchlist` | Ranked alpha candidates for a supplied watchlist of up to 100 tickers |
 | `GET` | `/api/crossovers` | Golden/death cross detection with `?threshold=` |
 | `GET` | `/api/research/{ticker}` | Deep research with `?start=&end=` date range |
 

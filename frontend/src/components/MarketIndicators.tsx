@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { fetchMarketConditions } from "@/lib/api";
 import {
@@ -40,6 +40,15 @@ const STATE_BUTTONS: { state: ConditionState; label: string }[] = [
   { state: "unknown", label: "n/a" },
 ];
 
+const MANUAL_ENV_KEYS: Record<string, string> = {
+  cb_consumer_confidence: "MARKET_cb_consumer_confidence",
+  cb_net_pct_stocks_higher: "MARKET_cb_net_pct_stocks_higher",
+  sell_side_indicator: "MARKET_sell_side_indicator",
+  ltg_5yr_z: "MARKET_ltg_5yr_z",
+  mna_10yr_z: "MARKET_mna_10yr_z",
+  credit_stress_indicator: "MARKET_credit_stress_indicator",
+};
+
 export default function MarketIndicators() {
   const [conditions, setConditions] = useState<RuntimeCondition[]>(() => cloneSeedConditions());
   const [showAdd, setShowAdd] = useState(false);
@@ -54,6 +63,10 @@ export default function MarketIndicators() {
 
   const summary = useMemo(() => computeSummary(conditions), [conditions]);
   const categories = useMemo(() => sortedCategories(conditions), [conditions]);
+  const manualRows = useMemo(
+    () => conditions.filter((c) => MANUAL_ENV_KEYS[c.id]),
+    [conditions],
+  );
   const categoryOptions = useMemo(
     () => [...new Set(conditions.map((c) => c.category))].sort(),
     [conditions],
@@ -88,10 +101,20 @@ export default function MarketIndicators() {
     try {
       const data = await fetchMarketConditions({ refresh });
       setConditions((prev) => applyFetchedConditions(prev, data.conditions));
-      const msg = `Updated ${data.meta.fetchedCount} signal(s) · ${data.meta.unknownCount} still unknown`;
+      const msg = `Updated ${data.meta.fetchedCount} signal(s) · ${data.meta.coveragePct ?? 0}% coverage · ${data.meta.riskLevel ?? "Unknown"} risk`;
       setFetchMessage(msg);
-      if (data.meta.warnings.length > 0 && !data.meta.fredConfigured) {
-        setFetchError("Set FRED_API_KEY in backend/.env for yield curve, SLOOS, and valuation z-score.");
+      if (data.meta.warnings.length > 0) {
+        const relevantWarnings = data.meta.warnings.filter((w) => !w.includes("using public FRED CSV fallback"));
+        const manual = relevantWarnings.filter((w) => w.includes("MARKET_"));
+        const technical = relevantWarnings.filter((w) => !w.includes("MARKET_"));
+        if (manual.length > 0) {
+          setFetchError(
+            `${manual.length} proprietary signal(s) need manual values in backend/.env or inline edit.`
+            + (technical.length ? ` ${technical.join(" ")}` : ""),
+          );
+        } else if (technical.length > 0) {
+          setFetchError(technical.join(" "));
+        }
       }
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "Fetch failed");
@@ -99,6 +122,11 @@ export default function MarketIndicators() {
       setFetching(false);
     }
   };
+
+  useEffect(() => {
+    void onFetchAll(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const exportJson = () => {
     const payload = conditions.map(({ evaluate, ...rest }) => ({
@@ -165,11 +193,12 @@ export default function MarketIndicators() {
         </p>
       </header>
 
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <SummaryCard label="Overall" value={summary.riskLevel} accent={summary.riskLevel !== "Normal"} />
         <SummaryCard label="% Triggered" value={summary.pct !== null ? `${summary.pct}%` : "—"} accent />
         <SummaryCard label="Triggered" value={String(summary.triggered)} detail={`of ${summary.known} known`} />
         <SummaryCard label="Unknown" value={String(summary.unknown)} detail="excluded from %" />
-        <SummaryCard label="Total signals" value={String(summary.total)} />
+        <SummaryCard label="Coverage" value={`${summary.coveragePct}%`} detail={`${summary.total} total`} />
       </div>
 
       <section className="mb-6 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
@@ -252,6 +281,33 @@ export default function MarketIndicators() {
       {fetchMessage ? <p className="mb-4 text-sm text-emerald-300">{fetchMessage}</p> : null}
       {fetchError ? <p className="mb-4 text-sm text-amber-300">{fetchError}</p> : null}
 
+      <section className="mb-6 rounded-xl border border-slate-800 bg-slate-900/35 p-4">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Manual data links
+        </h2>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          {manualRows.map((c) => (
+            <div key={c.id} className="rounded-md border border-slate-800 bg-slate-950/40 p-3">
+              <div className="text-sm text-slate-200">{c.name}</div>
+              <div className="mt-1 font-mono text-[11px] text-slate-500">{MANUAL_ENV_KEYS[c.id]}</div>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-500">{c.threshold}</span>
+                {c.sourceUrl ? (
+                  <a
+                    href={c.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-md border border-slate-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800"
+                  >
+                    Open source
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {showAdd && (
         <form onSubmit={onAdd} className="mb-6 grid gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4 sm:grid-cols-2 lg:grid-cols-5">
           <Field label="Name" value={addName} onChange={setAddName} required />
@@ -306,9 +362,25 @@ export default function MarketIndicators() {
                             />
                             <span>{c.name}</span>
                           </span>
+                          {c.notes ? (
+                            <p className="mt-1 pl-4 text-[11px] text-slate-500">{c.notes}</p>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2 text-xs text-slate-400">{c.threshold}</td>
-                        <td className="hidden px-3 py-2 text-xs text-slate-500 sm:table-cell">{c.source}</td>
+                        <td className="hidden px-3 py-2 text-xs text-slate-500 sm:table-cell">
+                          {c.sourceUrl ? (
+                            <a
+                              className="text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
+                              href={c.sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {c.source}
+                            </a>
+                          ) : (
+                            c.source
+                          )}
+                        </td>
                         <td className="px-3 py-2">
                           <input
                             className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-xs"

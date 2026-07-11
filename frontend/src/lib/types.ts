@@ -8,6 +8,8 @@ export type MoverRow = {
   pastPrice: number;
   pastPriceDate: string;
   pctChange: number;
+  trailingPE: number | null;
+  forwardPE: number | null;
 };
 
 export type SectorSummaryRow = {
@@ -250,7 +252,100 @@ export type MarketConditionsFetchResponse = {
     fredConfigured: boolean;
     fetchedCount: number;
     unknownCount: number;
+    triggeredCount?: number;
+    coveragePct?: number;
+    riskLevel?: string;
     warnings: string[];
   };
 };
 
+export type AlphaSignal = {
+  id: string;
+  label: string;
+  state: "bullish" | "neutral" | "bearish";
+  contribution: number;
+  detail: string;
+};
+
+export type AlphaBacktestMetric = {
+  signal: string;
+  horizonDays: number;
+  sampleSize: number;
+  winRate: number;
+  avgReturn: number;
+  medianReturn: number;
+  benchmarkAvgReturn: number;
+  alphaAvgReturn: number;
+};
+
+export type AlphaTradePlan = {
+  action: "BUY" | "SELL" | "WATCH" | "AVOID";
+  confidence: number;
+  horizon: string;
+  entry: number;
+  buyBelow: number | null;
+  sellAbove: number | null;
+  stop: number | null;
+  target1: number | null;
+  target2: number | null;
+  riskReward: number | null;
+  optionStrategy: string | null;
+  optionDirection: string | null;
+  optionStrike: number | null;
+  optionExpiry: string | null;
+  optionRationale: string | null;
+  rationale: string;
+};
+
+export type AlphaCandidateRow = {
+  rank: number;
+  ticker: string;
+  companyName: string;
+  sector: string;
+  currentPrice: number;
+  priceDate: string;
+  alphaScore: number;
+  technicalScore: number;
+  riskAdjustedScore: number;
+  expectedReturn20d: number;
+  momentum20d: number;
+  momentum63d: number;
+  rsVsSpy20d: number;
+  rsVsSector20d: number;
+  sectorStrength20d: number;
+  volatility20d: number;
+  betaVsSpy: number;
+  maxDrawdown63d: number;
+  trendState: string;
+  factorExposure: string;
+  regimeFit: string;
+  catalystScore: number;
+  revisionScore: number;
+  catalystNotes: string[];
+  tradePlan: AlphaTradePlan;
+  signals: AlphaSignal[];
+  backtests: AlphaBacktestMetric[];
+};
+
+export type AlphaCandidatesResponse = {
+  asOf: string;
+  marketRegime: {
+    state: string;
+    effectiveState: string;
+    riskMode: string;
+    spyTrend: string;
+    spyDrawdownPct: number | null;
+  };
+  candidates: AlphaCandidateRow[];
+  meta: {
+    total: number;
+    computed: number;
+    returned: number;
+    skipped: number;
+    minScore: number;
+    sector: string | null;
+    maxBeta: number | null;
+    signals: string[];
+    warnings: string[];
+  };
+};

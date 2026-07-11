@@ -4,13 +4,16 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 
-import { formatMoney, formatPct } from "@/lib/format";
+import { formatMoney, formatNumber, formatPct } from "@/lib/format";
 import type { MoverRow } from "@/lib/types";
 
-type SortKey = "rank" | "ticker" | "companyName" | "sector" | "currentPrice" | "pastPrice" | "pctChange";
+type SortKey = "rank" | "ticker" | "companyName" | "sector" | "currentPrice" | "pastPrice" | "pctChange" | "trailingPE" | "forwardPE";
 type SortDir = "asc" | "desc";
 
 function compare(a: unknown, b: unknown): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
   if (typeof a === "number" && typeof b === "number") return a - b;
   return String(a).localeCompare(String(b));
 }
@@ -70,7 +73,7 @@ export default function MoversTable(props: {
       )}
 
       <div className="overflow-auto">
-        <table className="w-full min-w-[720px]">
+        <table className="w-full min-w-[920px]">
           <thead className="bg-slate-950/40">
             <tr className="border-b border-slate-800">
               <th className="w-14">{headerCell("rank", "Rank")}</th>
@@ -79,6 +82,8 @@ export default function MoversTable(props: {
               <th className="w-64">{headerCell("sector", "Sector")}</th>
               <th className="w-28">{headerCell("currentPrice", "Current", true)}</th>
               <th className="w-28">{headerCell("pastPrice", "Past", true)}</th>
+              <th className="w-24">{headerCell("trailingPE", "Trailing P/E", true)}</th>
+              <th className="w-24">{headerCell("forwardPE", "Forward P/E", true)}</th>
               <th className="w-28">{headerCell("pctChange", "% Change", true)}</th>
             </tr>
           </thead>
@@ -104,6 +109,12 @@ export default function MoversTable(props: {
                   {formatMoney(r.pastPrice)}
                   <div className="text-[10px] text-slate-500">{r.pastPriceDate}</div>
                 </td>
+                <td className="px-3 py-2 text-right text-sm text-slate-300 tabular-nums">
+                  {r.trailingPE == null ? "N/A" : formatNumber(r.trailingPE, 2)}
+                </td>
+                <td className="px-3 py-2 text-right text-sm text-slate-300 tabular-nums">
+                  {r.forwardPE == null ? "N/A" : formatNumber(r.forwardPE, 2)}
+                </td>
                 <td className={clsx("px-3 py-2 text-right text-sm font-semibold tabular-nums", pctClass(r.pctChange))}>
                   {formatPct(r.pctChange)}
                 </td>
@@ -111,7 +122,7 @@ export default function MoversTable(props: {
             ))}
             {sorted.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-sm text-slate-400">
+                <td colSpan={9} className="px-4 py-6 text-sm text-slate-400">
                   No rows.
                 </td>
               </tr>
@@ -126,4 +137,3 @@ export default function MoversTable(props: {
     </div>
   );
 }
-

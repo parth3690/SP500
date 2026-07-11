@@ -6,6 +6,7 @@ export type MarketCondition = {
   category: string;
   threshold: string;
   source: string;
+  sourceUrl?: string;
   value: string | number | null;
   state: ConditionState;
   notes?: string;
@@ -27,11 +28,72 @@ function num(value: string | number | null): number | null {
 // ===== EDIT HERE: add or change conditions =====
 export const SEED_CONDITIONS: MarketCondition[] = [
   {
+    id: "spy_below_200dma",
+    name: "SPY below 200-day moving average",
+    category: "Trend",
+    threshold: "% below 200DMA < 0",
+    source: "Yahoo Finance (SPY)",
+    sourceUrl: "https://finance.yahoo.com/quote/SPY/history/",
+    value: null,
+    state: "unknown",
+    evaluate(value) {
+      const n = num(value);
+      if (n === null) return "unknown";
+      return n < 0 ? "triggered" : "not_triggered";
+    },
+  },
+  {
+    id: "spy_50_below_200dma",
+    name: "SPY 50DMA below 200DMA",
+    category: "Trend",
+    threshold: "50DMA − 200DMA < 0",
+    source: "Yahoo Finance (SPY)",
+    sourceUrl: "https://finance.yahoo.com/quote/SPY/history/",
+    value: null,
+    state: "unknown",
+    evaluate(value) {
+      const n = num(value);
+      if (n === null) return "unknown";
+      return n < 0 ? "triggered" : "not_triggered";
+    },
+  },
+  {
+    id: "spy_3m_drawdown",
+    name: "SPY drawdown from 3-month high > 8%",
+    category: "Trend",
+    threshold: "drawdown <= -8%",
+    source: "Yahoo Finance (SPY)",
+    sourceUrl: "https://finance.yahoo.com/quote/SPY/history/",
+    value: null,
+    state: "unknown",
+    evaluate(value) {
+      const n = num(value);
+      if (n === null) return "unknown";
+      return n <= -8 ? "triggered" : "not_triggered";
+    },
+  },
+  {
+    id: "vix_elevated",
+    name: "VIX elevated above 25",
+    category: "Volatility",
+    threshold: "VIX > 25",
+    source: "Yahoo Finance (^VIX)",
+    sourceUrl: "https://finance.yahoo.com/quote/%5EVIX/history/",
+    value: null,
+    state: "unknown",
+    evaluate(value) {
+      const n = num(value);
+      if (n === null) return "unknown";
+      return n > 25 ? "triggered" : "not_triggered";
+    },
+  },
+  {
     id: "cb_consumer_confidence",
     name: "Conf Board Consumer Confidence > 110 (prior 6m)",
     category: "Sentiment",
     threshold: "index > 110",
     source: "Conference Board (manual)",
+    sourceUrl: "https://www.conference-board.org/topics/consumer-confidence",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -46,6 +108,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Sentiment",
     threshold: "net % > 20",
     source: "Conference Board (manual)",
+    sourceUrl: "https://www.conference-board.org/topics/consumer-confidence",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -60,6 +123,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Sentiment",
     threshold: "signal = Sell",
     source: "BofA (manual)",
+    sourceUrl: "https://business.bofa.com/en-us/content/global-research.html",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -76,6 +140,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Sentiment",
     threshold: "z-score > 1",
     source: "IBES (manual)",
+    sourceUrl: "https://www.lseg.com/en/data-analytics/financial-data/company-data/ibes-estimates",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -90,6 +155,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Sentiment",
     threshold: "z-score > 1",
     source: "Deal data (manual)",
+    sourceUrl: "https://www.factset.com/solutions/business-development/mergers-acquisitions",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -104,6 +170,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Valuation",
     threshold: "z-score > 1",
     source: "Computed (FRED + PE)",
+    sourceUrl: "https://www.multpl.com/s-p-500-pe-ratio/table/by-month",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -118,6 +185,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Valuation",
     threshold: "low − high ≤ −2.5 ppt",
     source: "Factor data (manual)",
+    sourceUrl: "https://finance.yahoo.com/quote/VLUE/history/",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -132,6 +200,7 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Macro",
     threshold: "10y–2y < 0 in last 6m",
     source: "FRED (T10Y2Y)",
+    sourceUrl: "https://fred.stlouisfed.org/series/T10Y2Y",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -145,11 +214,27 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     },
   },
   {
+    id: "high_yield_spread",
+    name: "High-yield credit spread above 5%",
+    category: "Credit",
+    threshold: "HY OAS > 5",
+    source: "FRED (BAMLH0A0HYM2)",
+    sourceUrl: "https://fred.stlouisfed.org/series/BAMLH0A0HYM2",
+    value: null,
+    state: "unknown",
+    evaluate(value) {
+      const n = num(value);
+      if (n === null) return "unknown";
+      return n > 5 ? "triggered" : "not_triggered";
+    },
+  },
+  {
     id: "credit_stress_indicator",
     name: "Credit Stress Indicator drops below 0.25",
     category: "Macro",
     threshold: "level < 0.25",
     source: "BofA (manual)",
+    sourceUrl: "https://business.bofa.com/en-us/content/global-research.html",
     value: null,
     state: "unknown",
     evaluate(value) {
@@ -164,12 +249,28 @@ export const SEED_CONDITIONS: MarketCondition[] = [
     category: "Macro",
     threshold: "net % tightening > 0",
     source: "FRED (DRTSCILM)",
+    sourceUrl: "https://fred.stlouisfed.org/series/DRTSCILM",
     value: null,
     state: "unknown",
     evaluate(value) {
       const n = num(value);
       if (n === null) return "unknown";
       return n > 0 ? "triggered" : "not_triggered";
+    },
+  },
+  {
+    id: "sahm_rule",
+    name: "Sahm recession indicator triggered",
+    category: "Macro",
+    threshold: "level >= 0.5",
+    source: "FRED (SAHMREALTIME)",
+    sourceUrl: "https://fred.stlouisfed.org/series/SAHMREALTIME",
+    value: null,
+    state: "unknown",
+    evaluate(value) {
+      const n = num(value);
+      if (n === null) return "unknown";
+      return n >= 0.5 ? "triggered" : "not_triggered";
     },
   },
 ];
@@ -187,7 +288,7 @@ export const HISTORICAL_PEAKS: HistoricalPeak[] = [
   { date: "May-26", pctTriggered: 70, spLevel: 7580 },
 ];
 
-export const CATEGORY_ORDER = ["Sentiment", "Valuation", "Macro"];
+export const CATEGORY_ORDER = ["Trend", "Volatility", "Credit", "Macro", "Valuation", "Sentiment"];
 
 export type RuntimeCondition = MarketCondition & { manualState?: boolean };
 
@@ -198,6 +299,7 @@ export function cloneSeedConditions(): RuntimeCondition[] {
     category: c.category,
     threshold: c.threshold,
     source: c.source,
+    sourceUrl: c.sourceUrl,
     value: c.value,
     state: c.state,
     notes: c.notes ?? "",
@@ -230,7 +332,14 @@ export function computeSummary(conditions: RuntimeCondition[]) {
     }
   }
   const pct = known > 0 ? Math.round((triggered / known) * 100) : null;
-  return { triggered, known, unknown, pct, total: conditions.length };
+  const coveragePct = conditions.length > 0 ? Math.round((known / conditions.length) * 100) : 0;
+  const riskLevel =
+    pct === null ? "Unknown"
+      : pct >= 70 ? "Extreme"
+        : pct >= 50 ? "Elevated"
+          : pct >= 30 ? "Watch"
+            : "Normal";
+  return { triggered, known, unknown, pct, coveragePct, riskLevel, total: conditions.length };
 }
 
 export function sortedCategories(conditions: RuntimeCondition[]): string[] {
@@ -261,6 +370,7 @@ export function mergeImportedConditions(
       category: item.category ?? template?.category ?? "Other",
       threshold: item.threshold ?? template?.threshold ?? "",
       source: item.source ?? template?.source ?? "",
+      sourceUrl: item.sourceUrl ?? template?.sourceUrl,
       value: item.value ?? null,
       state: (item.state as ConditionState) ?? "unknown",
       notes: item.notes ?? "",
@@ -284,7 +394,13 @@ export function applyFetchedConditions(
   const byId = new Map(fetched.map((r) => [r.id, r]));
   return conditions.map((c) => {
     const row = byId.get(c.id);
-    if (!row || !row.fetched) return c;
+    if (!row) return c;
+    if (!row.fetched) {
+      return {
+        ...c,
+        notes: row.note ? String(row.note) : c.notes,
+      };
+    }
     const next: RuntimeCondition = {
       ...c,
       value: row.value,

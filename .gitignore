@@ -12,6 +12,7 @@ node_modules/
 .next/
 out/
 dist/
+*.tsbuildinfo
 
 # Env / API keys — never commit real secrets (use .env.example + copy to .env locally)
 .env
@@ -24,4 +25,3 @@ frontend/.env.local
 # OS
 .DS_Store
 Thumbs.db
-
