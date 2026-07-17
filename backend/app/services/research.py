@@ -8,7 +8,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from .fmp import fmp_symbol, merge_fmp_live_into_research
+from .fmp import fetch_fmp_research_fundamentals, fmp_symbol, merge_fmp_live_into_research
 from .indicators import (
     compute_bollinger_series,
     compute_ema_series,
@@ -16,6 +16,7 @@ from .indicators import (
     compute_rsi_series,
     compute_sma_series,
 )
+from .prices import fetch_fmp_price_history
 
 
 # ── Data Fetching ──────────────────────────────────────────────────────────
@@ -38,6 +39,8 @@ def fetch_single_ticker_ohlcv(
     fetch_end = display_end + timedelta(days=1)
     fetch_start = display_start - timedelta(days=250)
 
+    df = pd.DataFrame()
+    yahoo_error: Optional[Exception] = None
     try:
         df = yf.download(
             tickers=yahoo_ticker,
@@ -47,11 +50,16 @@ def fetch_single_ticker_ohlcv(
             auto_adjust=False,
             progress=False,
         )
-    except Exception as e:
-        raise ValueError(f"Failed to fetch data for {yahoo_ticker}: {e}")
+    except Exception as exc:
+        yahoo_error = exc
 
+    source = "Yahoo Finance"
     if df is None or df.empty:
-        raise ValueError(f"No data available for {yahoo_ticker}")
+        df = fetch_fmp_price_history(yahoo_ticker, fetch_start, fetch_end)
+        source = "Financial Modeling Prep"
+    if df is None or df.empty:
+        detail = f": {yahoo_error}" if yahoo_error else ""
+        raise ValueError(f"No data available for {yahoo_ticker} from Yahoo or FMP{detail}")
 
     if isinstance(df.columns, pd.MultiIndex):
         level0 = df.columns.get_level_values(0).tolist()
@@ -73,6 +81,7 @@ def fetch_single_ticker_ohlcv(
         if isinstance(result[col], pd.DataFrame):
             result[col] = result[col].iloc[:, 0]
 
+    result.attrs["source"] = source
     return result
 
 
@@ -80,10 +89,11 @@ def fetch_ticker_info(yahoo_ticker: str) -> dict[str, Any]:
     """Fetch fundamental data from yfinance."""
     import yfinance as yf
 
+    yahoo_info: dict[str, Any] = {}
     try:
         t = yf.Ticker(yahoo_ticker)
         info = t.info or {}
-        return {
+        yahoo_info = {
             "trailingPE": info.get("trailingPE"),
             "forwardPE": info.get("forwardPE"),
             "marketCap": info.get("marketCap"),
@@ -91,9 +101,17 @@ def fetch_ticker_info(yahoo_ticker: str) -> dict[str, Any]:
             "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
             "beta": info.get("beta"),
             "dividendYield": info.get("dividendYield"),
+            "source": "Yahoo Finance",
         }
     except Exception:
-        return {}
+        pass
+    if all(yahoo_info.get(key) is not None for key in ("trailingPE", "forwardPE", "marketCap", "beta")):
+        return yahoo_info
+    fallback = fetch_fmp_research_fundamentals(yahoo_ticker)
+    for key, value in fallback.items():
+        if yahoo_info.get(key) is None and value is not None:
+            yahoo_info[key] = value
+    return yahoo_info
 
 
 # ── Utility ────────────────────────────────────────────────────────────────
@@ -834,6 +852,21 @@ def compute_research(
     high = df["High"]
     low = df["Low"]
     volume = df["Volume"]
+    recent_year = close.dropna().iloc[-252:]
+    if fundamentals.get("fiftyTwoWeekHigh") is None and not recent_year.empty:
+        fundamentals["fiftyTwoWeekHigh"] = float(recent_year.max())
+    if fundamentals.get("fiftyTwoWeekLow") is None and not recent_year.empty:
+        fundamentals["fiftyTwoWeekLow"] = float(recent_year.min())
+    fundamental_keys = (
+        "trailingPE",
+        "forwardPE",
+        "marketCap",
+        "fiftyTwoWeekHigh",
+        "fiftyTwoWeekLow",
+        "beta",
+        "dividendYield",
+    )
+    fundamentals_available = sum(fundamentals.get(key) is not None for key in fundamental_keys)
 
     # ── Compute ALL indicators ONCE (vectorized) ──────────────────────────
     sma20 = compute_sma_series(close, 20)
@@ -929,6 +962,13 @@ def compute_research(
         "avgVolume": int(avg_volume),
         "latestRSI": latest_rsi,
         "fundamentals": fundamentals,
+        "dataQuality": {
+            "status": "complete" if fundamentals_available >= 6 else "degraded",
+            "priceSource": df.attrs.get("source", "Unknown"),
+            "priceBars": len(d),
+            "fundamentalsAvailable": fundamentals_available,
+            "fundamentalsTotal": len(fundamental_keys),
+        },
         "ohlcv": {
             "dates": dates,
             "open": _clean_series(d["Open"]),

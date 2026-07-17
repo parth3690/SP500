@@ -4,6 +4,7 @@ import datetime as dt
 import os
 import re
 import statistics
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -11,6 +12,8 @@ from typing import Any, Optional
 import httpx
 import pandas as pd
 import yfinance as yf
+
+from .prices import fetch_fmp_price_history
 
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 FRED_CSV_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv"
@@ -108,7 +111,9 @@ def _fetch_multpl_pe() -> dict[str, float]:
     url = "https://www.multpl.com/s-p-500-pe-ratio/table/by-month"
     try:
         with httpx.Client(timeout=30, headers={"User-Agent": "Mozilla/5.0"}) as client:
-            html = client.get(url).text
+            response = client.get(url)
+            response.raise_for_status()
+            html = response.text
     except Exception:
         return {}
     out: dict[str, float] = {}
@@ -210,10 +215,9 @@ def _fetch_low_minus_high_pe_6m() -> dict[str, Any]:
     """Proxy: 6m return spread value ETF (VLUE) minus growth ETF (IVW), in ppt."""
 
     def _etf_return(sym: str) -> Optional[float]:
-        hist = yf.Ticker(sym).history(period="6mo", auto_adjust=True)
-        if hist is None or hist.empty or len(hist) < 2:
+        closes = _download_close(sym, period="6mo")
+        if closes is None:
             return None
-        closes = hist["Close"].dropna()
         if len(closes) < 2:
             return None
         return (float(closes.iloc[-1]) / float(closes.iloc[0]) - 1) * 100
@@ -238,16 +242,42 @@ def _fetch_low_minus_high_pe_6m() -> dict[str, Any]:
 def _download_close(symbol: str, *, period: str = "1y") -> Optional[pd.Series]:
     try:
         hist = yf.Ticker(symbol).history(period=period, auto_adjust=True)
-        if hist is None or hist.empty or "Close" not in hist.columns:
-            return None
-        closes = hist["Close"].dropna()
-        return closes if len(closes) > 1 else None
+        if hist is not None and not hist.empty and "Close" in hist.columns:
+            closes = hist["Close"].dropna()
+            if len(closes) > 1:
+                closes.attrs["source"] = "Yahoo Finance"
+                return closes
     except Exception:
+        pass
+
+    period_days = {"3mo": 120, "6mo": 220, "1y": 400}.get(period, 400)
+    start = dt.date.today() - dt.timedelta(days=period_days)
+    fred_symbol = {"SPY": "SP500", "^VIX": "VIXCLS"}.get(symbol)
+    if fred_symbol:
+        try:
+            observations = _fred_series(fred_symbol, start=start.isoformat())
+            if observations:
+                index = pd.to_datetime([row[0] for row in observations])
+                closes = pd.Series(
+                    [row[1] for row in observations], index=index, name="Close"
+                ).sort_index()
+                closes.attrs["source"] = (
+                    "FRED S&P 500 index proxy" if symbol == "SPY" else "FRED VIX"
+                )
+                return closes
+        except Exception:
+            pass
+
+    history = fetch_fmp_price_history(symbol, start, dt.date.today() + dt.timedelta(days=1))
+    if history.empty or "Close" not in history.columns:
         return None
+    closes = history["Close"].dropna()
+    closes.attrs["source"] = "Financial Modeling Prep"
+    return closes if len(closes) > 1 else None
 
 
-def _fetch_spy_below_200dma() -> dict[str, Any]:
-    closes = _download_close("SPY", period="1y")
+def _fetch_spy_below_200dma(closes: Optional[pd.Series] = None) -> dict[str, Any]:
+    closes = closes if closes is not None else _download_close("SPY", period="1y")
     if closes is None or len(closes) < 200:
         return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load enough SPY history"}
     latest = float(closes.iloc[-1])
@@ -257,12 +287,15 @@ def _fetch_spy_below_200dma() -> dict[str, Any]:
         "value": round((latest / sma200 - 1) * 100, 2),
         "state": "triggered" if triggered else "not_triggered",
         "fetched": True,
-        "note": f"SPY {latest:.2f} vs 200DMA {sma200:.2f}; value is % above/below 200DMA",
+        "note": (
+            f"{closes.attrs.get('source', 'SPY')} latest {latest:.2f} vs 200DMA {sma200:.2f}; "
+            "value is % above/below 200DMA"
+        ),
     }
 
 
-def _fetch_spy_50_below_200dma() -> dict[str, Any]:
-    closes = _download_close("SPY", period="1y")
+def _fetch_spy_50_below_200dma(closes: Optional[pd.Series] = None) -> dict[str, Any]:
+    closes = closes if closes is not None else _download_close("SPY", period="1y")
     if closes is None or len(closes) < 200:
         return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load enough SPY history"}
     sma50 = float(closes.rolling(50).mean().iloc[-1])
@@ -272,12 +305,12 @@ def _fetch_spy_50_below_200dma() -> dict[str, Any]:
         "value": round((sma50 / sma200 - 1) * 100, 2),
         "state": "triggered" if triggered else "not_triggered",
         "fetched": True,
-        "note": f"SPY 50DMA {sma50:.2f} vs 200DMA {sma200:.2f}",
+        "note": f"{closes.attrs.get('source', 'SPY')} 50DMA {sma50:.2f} vs 200DMA {sma200:.2f}",
     }
 
 
-def _fetch_spy_3m_drawdown() -> dict[str, Any]:
-    closes = _download_close("SPY", period="6mo")
+def _fetch_spy_3m_drawdown(closes: Optional[pd.Series] = None) -> dict[str, Any]:
+    closes = closes if closes is not None else _download_close("SPY", period="1y")
     if closes is None or len(closes) < 50:
         return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load enough SPY history"}
     recent = closes.iloc[-63:] if len(closes) >= 63 else closes
@@ -287,12 +320,12 @@ def _fetch_spy_3m_drawdown() -> dict[str, Any]:
         "value": round(dd, 2),
         "state": "triggered" if triggered else "not_triggered",
         "fetched": True,
-        "note": "SPY drawdown from 3-month high",
+        "note": f"{closes.attrs.get('source', 'SPY')} drawdown from 3-month high",
     }
 
 
-def _fetch_vix_elevated() -> dict[str, Any]:
-    closes = _download_close("^VIX", period="3mo")
+def _fetch_vix_elevated(closes: Optional[pd.Series] = None) -> dict[str, Any]:
+    closes = closes if closes is not None else _download_close("^VIX", period="3mo")
     if closes is None:
         return {"value": None, "state": "unknown", "fetched": False, "note": "Could not load VIX"}
     latest = float(closes.iloc[-1])
@@ -301,7 +334,7 @@ def _fetch_vix_elevated() -> dict[str, Any]:
         "value": round(latest, 2),
         "state": "triggered" if triggered else "not_triggered",
         "fetched": True,
-        "note": "VIX latest close",
+        "note": f"{closes.attrs.get('source', 'VIX')} latest close",
     }
 
 
@@ -354,6 +387,24 @@ def _fetch_manual(condition_id: str, predicate) -> dict[str, Any]:
     }
 
 
+def _risk_assessment(fetched_count: int, triggered_count: int, total_count: int) -> tuple[int, str, str]:
+    coverage_pct = round((fetched_count / total_count) * 100) if total_count else 0
+    if coverage_pct < 50:
+        return coverage_pct, "Unknown", "Insufficient"
+    triggered_ratio = triggered_count / max(fetched_count, 1)
+    risk_level = (
+        "Extreme"
+        if triggered_ratio >= 0.70
+        else "Elevated"
+        if triggered_ratio >= 0.50
+        else "Watch"
+        if triggered_ratio >= 0.30
+        else "Normal"
+    )
+    confidence = "High" if coverage_pct >= 80 else "Medium"
+    return coverage_pct, risk_level, confidence
+
+
 def fetch_all_market_conditions() -> dict[str, Any]:
     warnings: list[str] = []
     results: dict[str, dict[str, Any]] = {}
@@ -362,38 +413,36 @@ def fetch_all_market_conditions() -> dict[str, Any]:
     if not fred_ok:
         warnings.append("FRED_API_KEY not set — using public FRED CSV fallback where available.")
 
+    # One shared market series keeps all trend signals on the same provider and as-of date.
+    spy_closes = _download_close("SPY", period="1y")
+    vix_closes = _download_close("^VIX", period="3mo")
+
     public_fetchers = (
         ("inverted_curve", _fetch_inverted_curve),
         ("sloos_tightening", _fetch_sloos),
         ("valuation_z", _fetch_valuation_z),
         ("high_yield_spread", _fetch_high_yield_spread),
         ("sahm_rule", _fetch_sahm_rule),
-        ("spy_below_200dma", _fetch_spy_below_200dma),
-        ("spy_50_below_200dma", _fetch_spy_50_below_200dma),
-        ("spy_3m_drawdown", _fetch_spy_3m_drawdown),
-        ("vix_elevated", _fetch_vix_elevated),
+        ("spy_below_200dma", lambda: _fetch_spy_below_200dma(spy_closes)),
+        ("spy_50_below_200dma", lambda: _fetch_spy_50_below_200dma(spy_closes)),
+        ("spy_3m_drawdown", lambda: _fetch_spy_3m_drawdown(spy_closes)),
+        ("vix_elevated", lambda: _fetch_vix_elevated(vix_closes)),
+        ("low_minus_high_pe_6m", _fetch_low_minus_high_pe_6m),
     )
-    for cid, fn in public_fetchers:
-        try:
-            results[cid] = fn()
-        except Exception as exc:
-            results[cid] = {
-                "value": None,
-                "state": "unknown",
-                "fetched": False,
-                "note": str(exc),
-            }
-            warnings.append(f"{cid}: {exc}")
-
-    try:
-        results["low_minus_high_pe_6m"] = _fetch_low_minus_high_pe_6m()
-    except Exception as exc:
-        results["low_minus_high_pe_6m"] = {
-            "value": None,
-            "state": "unknown",
-            "fetched": False,
-            "note": str(exc),
-        }
+    with ThreadPoolExecutor(max_workers=min(6, len(public_fetchers))) as pool:
+        futures = {pool.submit(fn): cid for cid, fn in public_fetchers}
+        for future in as_completed(futures):
+            cid = futures[future]
+            try:
+                results[cid] = future.result()
+            except Exception as exc:
+                results[cid] = {
+                    "value": None,
+                    "state": "unknown",
+                    "fetched": False,
+                    "note": str(exc),
+                }
+                warnings.append(f"{cid}: {exc}")
 
     manual_predicates = {
         "cb_consumer_confidence": lambda v: v > 110,
@@ -450,6 +499,12 @@ def fetch_all_market_conditions() -> dict[str, Any]:
             }
         )
 
+    coverage_pct, risk_level, confidence = _risk_assessment(
+        fetched_count, triggered_count, len(condition_ids)
+    )
+    if confidence == "Insufficient":
+        warnings.append("Market-risk assessment withheld because fewer than half of the indicators have data.")
+
     return {
         "asOf": datetime.now(timezone.utc).isoformat(),
         "conditions": rows,
@@ -458,20 +513,9 @@ def fetch_all_market_conditions() -> dict[str, Any]:
             "fetchedCount": fetched_count,
             "unknownCount": unknown_count,
             "triggeredCount": triggered_count,
-            "coveragePct": round((fetched_count / len(condition_ids)) * 100) if condition_ids else 0,
-            "riskLevel": (
-                "Unknown"
-                if fetched_count == 0
-                else (
-                    "Extreme"
-                    if (triggered_count / max(fetched_count, 1)) >= 0.70
-                    else "Elevated"
-                    if (triggered_count / max(fetched_count, 1)) >= 0.50
-                    else "Watch"
-                    if (triggered_count / max(fetched_count, 1)) >= 0.30
-                    else "Normal"
-                )
-            ),
+            "coveragePct": coverage_pct,
+            "riskLevel": risk_level,
+            "confidence": confidence,
             "warnings": warnings,
         },
     }

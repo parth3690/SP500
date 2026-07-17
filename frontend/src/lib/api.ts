@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse, AgentBotRunResponse } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -14,11 +14,21 @@ function parseJson<T>(text: string, status: number): T {
   }
 }
 
+function apiError(text: string, status: number): Error {
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown };
+    if (typeof payload.detail === "string") return new Error(payload.detail);
+  } catch {
+    // Use the raw response below when the server did not return JSON.
+  }
+  return new Error(text || `API error ${status}`);
+}
+
 async function fetchApi(url: string): Promise<string> {
   const res = await fetch(url, { cache: "no-store" });
   const text = await res.text().catch(() => "");
   if (!res.ok) {
-    throw new Error(text ? `${res.status}: ${text}` : `API error ${res.status}`);
+    throw apiError(text, res.status);
   }
   return text;
 }
@@ -32,7 +42,7 @@ async function fetchApiJson(url: string, body: unknown): Promise<string> {
   });
   const text = await res.text().catch(() => "");
   if (!res.ok) {
-    throw new Error(text ? `${res.status}: ${text}` : `API error ${res.status}`);
+    throw apiError(text, res.status);
   }
   return text;
 }
@@ -206,4 +216,40 @@ export async function fetchAlphaWatchlist(params: {
     refresh: params.refresh === true,
   });
   return parseJson<AlphaCandidatesResponse>(text, 200);
+}
+
+export type AgentBotHistoryItem = {
+  id?: string;
+  ticker: string;
+  action: string;
+  entryPrice: number;
+  recommendedAt: string;
+  closed?: boolean;
+  closedAt?: string;
+  exitPrice?: number;
+};
+
+export async function fetchAgentBotRun(params: {
+  mode: "sp500" | "watchlist";
+  tickers: string[];
+  riskMode?: "balanced" | "aggressive" | "defensive";
+  regime?: "auto" | "risk_on" | "neutral" | "risk_off";
+  topN?: number;
+  minScore?: number;
+  history?: AgentBotHistoryItem[];
+  refresh?: boolean;
+}): Promise<AgentBotRunResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/agent-bot/run`);
+  const text = await fetchApiJson(url.toString(), {
+    mode: params.mode,
+    tickers: params.tickers,
+    riskMode: params.riskMode ?? "balanced",
+    regime: params.regime ?? "auto",
+    topN: params.topN ?? 10,
+    minScore: params.minScore ?? 55,
+    history: params.history ?? [],
+    refresh: params.refresh === true,
+  });
+  return parseJson<AgentBotRunResponse>(text, 200);
 }

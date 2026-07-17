@@ -638,6 +638,15 @@ export default function ResearchPage() {
           <p className="text-sm text-slate-400">
             {data.companyName}{data.sector ? ` · ${data.sector}` : ""}
           </p>
+          {data.dataQuality ? (
+            <p className={clsx(
+              "mt-1 text-xs",
+              data.dataQuality.status === "complete" ? "text-emerald-400" : "text-amber-300"
+            )}>
+              Data {data.dataQuality.status} · {data.dataQuality.priceBars} price bars via {data.dataQuality.priceSource}
+              {` · ${data.dataQuality.fundamentalsAvailable}/${data.dataQuality.fundamentalsTotal} fundamentals`}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col items-start gap-0.5 text-right sm:items-end">
           <div className="flex items-baseline gap-3">

@@ -146,6 +146,14 @@ export type ResearchData = {
     fiftyTwoWeekLow: number | null;
     beta: number | null;
     dividendYield: number | null;
+    source?: string | null;
+  };
+  dataQuality?: {
+    status: "complete" | "degraded";
+    priceSource: string;
+    priceBars: number;
+    fundamentalsAvailable: number;
+    fundamentalsTotal: number;
   };
   ohlcv: {
     dates: string[];
@@ -339,13 +347,164 @@ export type AlphaCandidatesResponse = {
   candidates: AlphaCandidateRow[];
   meta: {
     total: number;
+    eligible?: number;
     computed: number;
     returned: number;
     skipped: number;
+    requested?: number;
+    available?: number;
+    coveragePct?: number;
+    priceCoveragePct?: number;
+    missingTickers?: string[];
+    status?: "complete" | "partial";
     minScore: number;
     sector: string | null;
     maxBeta: number | null;
     signals: string[];
     warnings: string[];
+  };
+};
+
+export type AgentBotCatalyst = {
+  available: boolean;
+  earningsDate: string | null;
+  exDividendDate: string | null;
+  targetMeanPrice: number | null;
+  analystRecommendation: string | null;
+  analystCount: number | null;
+  revenueGrowth: number | null;
+  earningsGrowth: number | null;
+  epsGrowth: number | null;
+  dividendYield: number | null;
+  revisionNotes: string[];
+};
+
+export type AgentBotRecommendation = {
+  rank: number;
+  ticker: string;
+  companyName: string;
+  sector: string;
+  action: "BUY" | "SELL" | "WATCH" | "AVOID";
+  confidence: number;
+  alphaScore: number;
+  riskAdjustedScore: number;
+  expectedReturn20d: number;
+  horizon: string;
+  entry: number;
+  buyBelow: number | null;
+  sellAbove: number | null;
+  stop: number | null;
+  target1: number | null;
+  target2: number | null;
+  riskReward: number | null;
+  optionStrategy: string | null;
+  optionDirection: string | null;
+  optionStrike: number | null;
+  optionExpiry: string | null;
+  optionRationale: string | null;
+  rationale: string;
+  whyNow: string;
+  signals: AlphaSignal[];
+  backtests: AlphaBacktestMetric[];
+  catalyst: AgentBotCatalyst;
+};
+
+export type AgentBotTracking = {
+  id: string | null;
+  ticker: string;
+  companyName: string;
+  action: "BUY" | "SELL" | "WATCH" | "AVOID";
+  entry: number;
+  currentPrice: number;
+  priceDate: string;
+  stop: number | null;
+  target1: number | null;
+  target2: number | null;
+  unrealizedReturnPct: number | null;
+  alphaScore: number;
+  whyNow: string;
+};
+
+export type AgentBotAlert = {
+  ticker: string;
+  type: string;
+  severity: "high" | "medium" | "low";
+  message: string;
+};
+
+export type AgentBotOutcome = {
+  id: string | null;
+  ticker: string;
+  action: string;
+  entryPrice: number;
+  currentPrice: number;
+  returnPct: number;
+  recommendedAt: string | null;
+  status: "open" | "closed";
+};
+
+export type AgentBotForwardEntry = {
+  id: string | null;
+  ticker: string;
+  action: string;
+  entryPrice: number;
+  recommendedAt: string;
+  closed: boolean;
+  forwardReturns: Record<string, number | null>;
+};
+
+export type AgentBotForwardAggregate = {
+  count: number;
+  avgReturn: number | null;
+};
+
+export type AgentBotForwardJournal = {
+  entries: AgentBotForwardEntry[];
+  aggregates: Record<string, AgentBotForwardAggregate>;
+};
+
+export type AgentBotBriefing = {
+  summary: string;
+  regime: string;
+  riskLevel: string;
+  topBuy: AgentBotRecommendation | null;
+  topSell: AgentBotRecommendation | null;
+  topWatch: AgentBotRecommendation | null;
+  topAvoid: AgentBotRecommendation | null;
+  counts: {
+    buy: number;
+    sell: number;
+    watch: number;
+    avoid: number;
+    alerts: number;
+    outcomes: number;
+  };
+};
+
+export type AgentBotRunResponse = {
+  asOf: string;
+  mode: "sp500" | "watchlist";
+  briefing: AgentBotBriefing;
+  recommendations: AgentBotRecommendation[];
+  activeTracking: AgentBotTracking[];
+  alerts: AgentBotAlert[];
+  outcomes: AgentBotOutcome[];
+  forwardJournal: AgentBotForwardJournal;
+  catalysts: Record<string, AgentBotCatalyst>;
+  meta: {
+    mode: string;
+    riskMode: string;
+    regime: string;
+    topN: number;
+    minScore: number;
+    adjustedMinScore?: number;
+    adjustedMaxBeta?: number | null;
+    marketConditions?: {
+      riskLevel: string;
+      coveragePct: number;
+      triggeredCount: number;
+      asOf: string | null;
+    };
+    [key: string]: unknown;
   };
 };

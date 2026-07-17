@@ -9,7 +9,8 @@ Set FMP_API_KEY in the environment. When unset, research uses Yahoo last bar onl
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -41,6 +42,54 @@ def fetch_fmp_quote(symbol: str, *, timeout: float = 12.0) -> Optional[dict[str,
     if isinstance(data, dict) and data.get("symbol") is not None:
         return data
     return None
+
+
+def _fetch_fmp_rows(endpoint: str, symbol: str) -> list[dict[str, Any]]:
+    api_key = os.getenv("FMP_API_KEY", "").strip()
+    if not api_key:
+        return []
+    base = os.getenv("FMP_API_BASE", "https://financialmodelingprep.com/stable").rstrip("/")
+    params: dict[str, Any] = {"symbol": fmp_symbol(symbol), "apikey": api_key}
+    if endpoint == "analyst-estimates":
+        params.update({"period": "annual", "page": 0, "limit": 5})
+    try:
+        response = httpx.get(f"{base}/{endpoint}", params=params, timeout=15.0)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+    return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+
+
+def fetch_fmp_research_fundamentals(symbol: str) -> dict[str, Any]:
+    """Fetch compact research fundamentals without relying on Yahoo metadata."""
+    endpoints = ("profile", "ratios-ttm", "analyst-estimates")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {endpoint: pool.submit(_fetch_fmp_rows, endpoint, symbol) for endpoint in endpoints}
+        payloads = {endpoint: future.result() for endpoint, future in futures.items()}
+
+    profile = payloads["profile"][0] if payloads["profile"] else {}
+    ratios = payloads["ratios-ttm"][0] if payloads["ratios-ttm"] else {}
+    price = profile.get("price")
+    forward_pe = None
+    estimates = sorted(payloads["analyst-estimates"], key=lambda row: str(row.get("date", "")))
+    future_estimates = [row for row in estimates if str(row.get("date", "")) >= date.today().isoformat()]
+    estimate = future_estimates[0] if future_estimates else (estimates[-1] if estimates else {})
+    try:
+        eps = float(estimate.get("epsAvg"))
+        if price is not None and eps > 0:
+            forward_pe = float(price) / eps
+    except (TypeError, ValueError, ZeroDivisionError):
+        forward_pe = None
+
+    return {
+        "trailingPE": ratios.get("priceToEarningsRatioTTM"),
+        "forwardPE": forward_pe,
+        "marketCap": profile.get("marketCap"),
+        "beta": profile.get("beta"),
+        "dividendYield": ratios.get("dividendYieldTTM"),
+        "source": "Financial Modeling Prep" if profile or ratios else None,
+    }
 
 
 def merge_fmp_live_into_research(payload: dict[str, Any], *, fmp_symbol_str: str) -> None:

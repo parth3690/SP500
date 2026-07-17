@@ -6,6 +6,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from .cache import VALUATION_CACHE, cache_get, cache_set
+from .sp500 import normalize_yahoo_ticker
 
 
 def _safe_float(v: Any) -> Optional[float]:
@@ -31,7 +32,7 @@ def _fetch_one(ticker: str) -> dict[str, Optional[float]]:
     try:
         import yfinance as yf
 
-        info = yf.Ticker(ticker).info or {}
+        info = yf.Ticker(normalize_yahoo_ticker(ticker)).info or {}
         fetched = bool(info)
         trailing_pe = _safe_float(info.get("trailingPE"))
         forward_pe = _safe_float(info.get("forwardPE"))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -241,3 +241,147 @@ class AlphaWatchlistRequest(BaseModel):
     regime: str = Field("auto", pattern="^(auto|risk_on|neutral|risk_off)$")
     enrichTop: int = Field(20, ge=0, le=50)
     refresh: bool = False
+
+
+class AgentBotHistoryItem(BaseModel):
+    id: Optional[str] = Field(None, max_length=64)
+    ticker: str = Field(..., min_length=1, max_length=20)
+    action: Literal["BUY", "SELL", "WATCH", "AVOID"]
+    entryPrice: float = Field(..., gt=0)
+    recommendedAt: datetime
+    closed: bool = False
+    closedAt: Optional[datetime] = None
+    exitPrice: Optional[float] = Field(None, gt=0)
+
+
+class AgentBotRunRequest(BaseModel):
+    mode: str = Field("watchlist", pattern="^(sp500|watchlist)$")
+    tickers: list[str] = Field(default_factory=list, max_length=100)
+    riskMode: str = Field("balanced", pattern="^(balanced|aggressive|defensive)$")
+    regime: str = Field("auto", pattern="^(auto|risk_on|neutral|risk_off)$")
+    topN: int = Field(10, ge=1, le=50)
+    minScore: float = Field(55.0, ge=0.0, le=100.0)
+    history: list[AgentBotHistoryItem] = Field(default_factory=list, max_length=1000)
+    refresh: bool = False
+
+
+class AgentBotCatalyst(BaseModel):
+    available: bool = False
+    earningsDate: Optional[str] = None
+    exDividendDate: Optional[str] = None
+    targetMeanPrice: Optional[float] = None
+    analystRecommendation: Optional[str] = None
+    analystCount: Optional[int] = None
+    revenueGrowth: Optional[float] = None
+    earningsGrowth: Optional[float] = None
+    epsGrowth: Optional[float] = None
+    dividendYield: Optional[float] = None
+    revisionNotes: list[str] = Field(default_factory=list)
+
+
+class AgentBotRecommendation(BaseModel):
+    rank: int
+    ticker: str
+    companyName: str
+    sector: str
+    action: str
+    confidence: float
+    alphaScore: float
+    riskAdjustedScore: float
+    expectedReturn20d: float
+    horizon: str
+    entry: float
+    buyBelow: Optional[float] = None
+    sellAbove: Optional[float] = None
+    stop: Optional[float] = None
+    target1: Optional[float] = None
+    target2: Optional[float] = None
+    riskReward: Optional[float] = None
+    optionStrategy: Optional[str] = None
+    optionDirection: Optional[str] = None
+    optionStrike: Optional[float] = None
+    optionExpiry: Optional[str] = None
+    optionRationale: Optional[str] = None
+    rationale: str
+    whyNow: str
+    signals: list[AlphaSignal]
+    backtests: list[AlphaBacktestMetric]
+    catalyst: AgentBotCatalyst = Field(default_factory=AgentBotCatalyst)
+
+
+class AgentBotTracking(BaseModel):
+    id: Optional[str] = None
+    ticker: str
+    companyName: str
+    action: str
+    entry: float
+    currentPrice: float
+    priceDate: date
+    stop: Optional[float] = None
+    target1: Optional[float] = None
+    target2: Optional[float] = None
+    unrealizedReturnPct: Optional[float] = None
+    alphaScore: float
+    whyNow: str = ""
+
+
+class AgentBotAlert(BaseModel):
+    ticker: str
+    type: str
+    severity: str
+    message: str
+
+
+class AgentBotOutcome(BaseModel):
+    id: Optional[str] = None
+    ticker: str
+    action: str
+    entryPrice: float
+    currentPrice: float
+    returnPct: float
+    recommendedAt: Optional[str] = None
+    status: str
+
+
+class AgentBotForwardEntry(BaseModel):
+    id: Optional[str] = None
+    ticker: str
+    action: str
+    entryPrice: float
+    recommendedAt: str
+    closed: bool
+    forwardReturns: dict[str, Optional[float]]
+
+
+class AgentBotForwardAggregate(BaseModel):
+    count: int
+    avgReturn: Optional[float] = None
+
+
+class AgentBotForwardJournal(BaseModel):
+    entries: list[AgentBotForwardEntry]
+    aggregates: dict[str, AgentBotForwardAggregate]
+
+
+class AgentBotBriefing(BaseModel):
+    summary: str
+    regime: str
+    riskLevel: str
+    topBuy: Optional[AgentBotRecommendation] = None
+    topSell: Optional[AgentBotRecommendation] = None
+    topWatch: Optional[AgentBotRecommendation] = None
+    topAvoid: Optional[AgentBotRecommendation] = None
+    counts: dict[str, int]
+
+
+class AgentBotRunResponse(BaseModel):
+    asOf: datetime
+    mode: str
+    briefing: AgentBotBriefing
+    recommendations: list[AgentBotRecommendation]
+    activeTracking: list[AgentBotTracking]
+    alerts: list[AgentBotAlert]
+    outcomes: list[AgentBotOutcome]
+    forwardJournal: AgentBotForwardJournal
+    catalysts: dict[str, AgentBotCatalyst]
+    meta: dict[str, Any]

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from ..models import Constituent
+from .sp500 import normalize_yahoo_ticker
 
 
 SECTOR_ETFS: dict[str, str] = {
@@ -38,8 +39,10 @@ ALPHA_SIGNAL_IDS = [
 
 
 def alpha_universe_tickers(constituents: Iterable[Constituent]) -> list[str]:
-    tickers = [c.yahooTicker for c in constituents]
-    tickers.extend(["SPY", *SECTOR_ETFS.values()])
+    constituents_list = list(constituents)
+    tickers = [c.yahooTicker for c in constituents_list]
+    sector_tickers = [SECTOR_ETFS.get(c.sector) for c in constituents_list]
+    tickers.extend(["SPY", *[ticker for ticker in sector_tickers if ticker]])
     return list(dict.fromkeys([t for t in tickers if t]))
 
 
@@ -134,12 +137,12 @@ def _score_core(
     risk_mode: str,
 ) -> dict[str, float | str]:
     trend_points = 0.0
-    if sma50 is not None and price > sma50:
-        trend_points += 10.0
-    if sma200 is not None and price > sma200:
-        trend_points += 8.0
-    if sma50 is not None and sma200 is not None and sma50 > sma200:
-        trend_points += 7.0
+    if sma50 is not None:
+        trend_points += 10.0 if price > sma50 else -10.0
+    if sma200 is not None:
+        trend_points += 8.0 if price > sma200 else -8.0
+    if sma50 is not None and sma200 is not None:
+        trend_points += 7.0 if sma50 > sma200 else -7.0
     trend_score = _clamp(50.0 + trend_points, 0.0, 100.0)
 
     momentum_score = _clamp(50.0 + momentum20 * 1.1 + momentum63 * 0.45, 0.0, 100.0)
@@ -227,9 +230,9 @@ def _backtest_alpha_signal(
     spy: pd.Series,
     sector: Optional[pd.Series],
     *,
-    current_score: float,
     risk_mode: str,
-    regime: str,
+    regime_override: str,
+    signal_directions: dict[str, str],
 ) -> list[dict[str, Any]]:
     close = close.dropna()
     spy = spy.dropna()
@@ -245,8 +248,23 @@ def _backtest_alpha_signal(
     sec = common.iloc[:, 2]
     stock_ret = stock.pct_change()
     spy_ret = market.pct_change()
-    threshold = max(58.0, min(current_score - 5.0, 72.0))
-    samples: dict[int, list[tuple[float, float]]] = {20: [], 60: []}
+    thresholds = {
+        "alpha_score": (68.0, 42.0),
+        "momentum": (62.0, 45.0),
+        "relative_strength": (62.0, 45.0),
+        "trend": (62.0, 45.0),
+        "risk_adjusted": (62.0, 45.0),
+        "factor_exposure": (62.0, 45.0),
+        "regime_fit": (62.0, 45.0),
+    }
+    active_directions = {
+        signal: direction
+        for signal, direction in signal_directions.items()
+        if signal in thresholds and direction in ("bullish", "bearish")
+    }
+    samples: dict[str, dict[int, list[tuple[float, float]]]] = {
+        signal: {20: [], 60: []} for signal in active_directions
+    }
 
     for idx in range(200, len(stock) - 61, 5):
         p = float(stock.iloc[idx])
@@ -260,7 +278,12 @@ def _backtest_alpha_signal(
         beta = _beta(stock_ret.iloc[max(0, idx - 63): idx + 1], spy_ret.iloc[max(0, idx - 63): idx + 1])
         dd_series = stock.iloc[max(0, idx - 63): idx + 1]
         dd = _max_drawdown(dd_series, len(dd_series))
-        score = _score_core(
+        sample_regime = (
+            _market_regime(market.iloc[: idx + 1])["state"]
+            if regime_override == "auto"
+            else regime_override
+        )
+        scores = _score_core(
             momentum20=m20,
             momentum63=m63,
             rs_spy20=m20 - spy20,
@@ -272,52 +295,59 @@ def _backtest_alpha_signal(
             beta_vs_spy=beta,
             drawdown63=dd,
             sector_strength20=sec20 - spy20,
-            regime=regime,
+            regime=sample_regime,
             risk_mode=risk_mode,
-        )["technicalScore"]
-        if float(score) < threshold:
-            continue
-        for horizon in samples:
+        )
+        score_by_signal = {
+            "alpha_score": float(scores["technicalScore"]),
+            "momentum": float(scores["momentumScore"]),
+            "relative_strength": float(scores["relativeStrengthScore"]),
+            "trend": float(scores["trendScore"]),
+            "risk_adjusted": float(scores["riskScore"]),
+            "factor_exposure": float(scores["factorScore"]),
+            "regime_fit": float(scores["regimeScore"]),
+        }
+        forward: dict[int, tuple[float, float]] = {}
+        for horizon in (20, 60):
             stock_fwd = _pct(stock, horizon, idx + horizon)
             spy_fwd = _pct(market, horizon, idx + horizon)
             if stock_fwd is not None and spy_fwd is not None:
-                samples[horizon].append((stock_fwd, spy_fwd))
+                forward[horizon] = (stock_fwd, spy_fwd)
+
+        for signal, direction in active_directions.items():
+            high, low = thresholds[signal]
+            score = score_by_signal[signal]
+            triggered = score >= high if direction == "bullish" else score <= low
+            if not triggered:
+                continue
+            sign = 1.0 if direction == "bullish" else -1.0
+            for horizon, (stock_fwd, spy_fwd) in forward.items():
+                samples[signal][horizon].append((stock_fwd * sign, spy_fwd * sign))
 
     out: list[dict[str, Any]] = []
-    for horizon, vals in samples.items():
-        if not vals:
-            continue
-        stock_vals = [v[0] for v in vals]
-        spy_vals = [v[1] for v in vals]
-        alpha_vals = [a - b for a, b in vals]
-        out.append(
-            {
-                "signal": "alpha_score",
-                "horizonDays": horizon,
-                "sampleSize": len(vals),
-                "winRate": round(sum(1 for v in stock_vals if v > 0) / len(stock_vals) * 100.0, 1),
-                "avgReturn": round(float(np.mean(stock_vals)), 2),
-                "medianReturn": round(float(np.median(stock_vals)), 2),
-                "benchmarkAvgReturn": round(float(np.mean(spy_vals)), 2),
-                "alphaAvgReturn": round(float(np.mean(alpha_vals)), 2),
-            }
-        )
+    for signal, horizons in samples.items():
+        for horizon, vals in horizons.items():
+            if not vals:
+                continue
+            stock_vals = [v[0] for v in vals]
+            spy_vals = [v[1] for v in vals]
+            alpha_vals = [a - b for a, b in vals]
+            out.append(
+                {
+                    "signal": signal,
+                    "horizonDays": horizon,
+                    "sampleSize": len(vals),
+                    "winRate": round(sum(1 for v in stock_vals if v > 0) / len(stock_vals) * 100.0, 1),
+                    "avgReturn": round(float(np.mean(stock_vals)), 2),
+                    "medianReturn": round(float(np.median(stock_vals)), 2),
+                    "benchmarkAvgReturn": round(float(np.mean(spy_vals)), 2),
+                    "alphaAvgReturn": round(float(np.mean(alpha_vals)), 2),
+                }
+            )
     return out
 
 
-def _enrich_ticker(symbol: str, current_price: float) -> dict[str, Any]:
-    try:
-        import yfinance as yf
-
-        ticker = yf.Ticker(symbol)
-        info = ticker.info or {}
-    except Exception:
-        return {
-            "catalystScore": 0.0,
-            "revisionScore": 0.0,
-            "catalystNotes": ["No lightweight catalyst data available."],
-        }
-
+def catalyst_scores_from_info(info: dict[str, Any], current_price: float) -> dict[str, Any]:
     target = _safe_float(info.get("targetMeanPrice"))
     recommendation = str(info.get("recommendationKey") or "").replace("_", " ").title()
     analyst_count = _safe_float(info.get("numberOfAnalystOpinions"))
@@ -362,6 +392,36 @@ def _enrich_ticker(symbol: str, current_price: float) -> dict[str, Any]:
     }
 
 
+def _enrich_ticker(symbol: str, current_price: float) -> dict[str, Any]:
+    try:
+        import yfinance as yf
+
+        info = yf.Ticker(normalize_yahoo_ticker(symbol)).info or {}
+    except Exception:
+        return {
+            "catalystScore": 0.0,
+            "revisionScore": 0.0,
+            "catalystNotes": ["No lightweight catalyst data available."],
+        }
+    return catalyst_scores_from_info(info, current_price)
+
+
+def apply_alpha_enrichment(row: dict[str, Any], data: dict[str, Any]) -> None:
+    row.update(data)
+    row["alphaScore"] = round(
+        _clamp(
+            row["technicalScore"]
+            + data["catalystScore"] * 0.18
+            + data["revisionScore"] * 0.22,
+            0.0,
+            100.0,
+        ),
+        2,
+    )
+    row["signals"] = _candidate_signals(row)
+    row["tradePlan"] = _trade_plan(row)
+
+
 def _enrich_candidates(rows: list[dict[str, Any]], enrich_top: int) -> None:
     if enrich_top <= 0:
         return
@@ -373,13 +433,7 @@ def _enrich_candidates(rows: list[dict[str, Any]], enrich_top: int) -> None:
         }
         for future in as_completed(futures):
             row = futures[future]
-            data = future.result()
-            row.update(data)
-            row["alphaScore"] = round(
-                _clamp(row["technicalScore"] + data["catalystScore"] * 0.18 + data["revisionScore"] * 0.22, 0.0, 100.0),
-                2,
-            )
-            row["signals"] = _candidate_signals(row)
+            apply_alpha_enrichment(row, future.result())
 
 
 def _signal_state(score: float, high: float = 62.0, low: float = 45.0) -> str:
@@ -451,20 +505,19 @@ def _candidate_signals(row: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _next_monthly_expiry(days_out: int = 45) -> str:
-    target = date.today() + timedelta(days=days_out)
-    first_next_month = date(target.year + (1 if target.month == 12 else 0), 1 if target.month == 12 else target.month + 1, 1)
-    d = first_next_month - timedelta(days=1)
-    while d.weekday() != 4:
-        d -= timedelta(days=1)
-    if d <= date.today() + timedelta(days=21):
-        next_month = first_next_month.month + 1
-        year = first_next_month.year + (1 if next_month == 13 else 0)
-        month = 1 if next_month == 13 else next_month
-        d = date(year, month, 1) - timedelta(days=1)
-        while d.weekday() != 4:
-            d -= timedelta(days=1)
-    return d.isoformat()
+def _third_friday(year: int, month: int) -> date:
+    first = date(year, month, 1)
+    return first + timedelta(days=(4 - first.weekday()) % 7 + 14)
+
+
+def _next_monthly_expiry(days_out: int = 45, *, as_of: Optional[date] = None) -> str:
+    target = (as_of or date.today()) + timedelta(days=days_out)
+    expiry = _third_friday(target.year, target.month)
+    if expiry < target:
+        year = target.year + (1 if target.month == 12 else 0)
+        month = 1 if target.month == 12 else target.month + 1
+        expiry = _third_friday(year, month)
+    return expiry.isoformat()
 
 
 def _round_strike(price: float) -> float:
@@ -556,15 +609,31 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
             risk_reward = reward / risk
 
     option_rationale = None
+    option_expiry = _next_monthly_expiry() if option_strategy else None
     if option_strategy and option_strike:
         option_rationale = (
-            f"Use {option_strategy.lower()} around {option_strike:.2f} strike expiring {_next_monthly_expiry()} "
+            f"Use {option_strategy.lower()} around {option_strike:.2f} strike expiring {option_expiry} "
             "when stock capital, share price, or defined-risk sizing makes common stock less practical."
         )
 
+    confidence_basis = score
+    if action == "SELL":
+        confidence_basis = 100.0 - score
+    elif action == "AVOID":
+        confidence_basis = max(100.0 - score, 100.0 - risk_score)
+
     return {
         "action": action,
-        "confidence": round(_clamp(score * 0.65 + risk_score * 0.25 + min(abs(expected) * 3.0, 10.0), 0.0, 100.0), 1),
+        "confidence": round(
+            _clamp(
+                confidence_basis * 0.65
+                + risk_score * 0.25
+                + min(abs(expected) * 3.0, 10.0),
+                0.0,
+                100.0,
+            ),
+            1,
+        ),
         "horizon": "20-60 trading days",
         "entry": round(entry, 2),
         "buyBelow": round(buy_below, 2) if buy_below is not None else None,
@@ -576,7 +645,7 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
         "optionStrategy": option_strategy,
         "optionDirection": option_direction,
         "optionStrike": option_strike,
-        "optionExpiry": _next_monthly_expiry() if option_strategy else None,
+        "optionExpiry": option_expiry,
         "optionRationale": option_rationale,
         "rationale": rationale,
     }
@@ -593,6 +662,7 @@ def compute_alpha_candidates(
     risk_mode: str = "balanced",
     regime_override: str = "auto",
     enrich_top: int = 20,
+    include_lowest: int = 0,
 ) -> dict[str, Any]:
     if close_prices is None or close_prices.empty or "SPY" not in close_prices.columns:
         return {
@@ -609,12 +679,11 @@ def compute_alpha_candidates(
     effective_regime = regime["state"] if regime_override == "auto" else regime_override
     spy_return20 = _pct(spy, 21) or 0.0
 
+    eligible_constituents = [c for c in constituents_list if not sector or c.sector == sector]
     rows: list[dict[str, Any]] = []
     skipped = 0
 
-    for c in constituents_list:
-        if sector and c.sector != sector:
-            continue
+    for c in eligible_constituents:
         if c.yahooTicker not in close_prices.columns:
             skipped += 1
             continue
@@ -656,13 +725,19 @@ def compute_alpha_candidates(
             risk_mode=risk_mode,
         )
         alpha_score = float(scores["technicalScore"])
-        if alpha_score < min_score:
+        if alpha_score < min_score and include_lowest <= 0:
             continue
 
         above50 = sma50 is not None and price > sma50
         above200 = sma200 is not None and price > sma200
-        trend_state = "price above 50/200DMA" if above50 and above200 else (
-            "price above 50DMA only" if above50 else "mixed trend"
+        trend_state = (
+            "price above 50/200DMA"
+            if above50 and above200
+            else "price below 50/200DMA"
+            if not above50 and not above200
+            else "price above 50DMA only"
+            if above50
+            else "mixed trend"
         )
         beta_value = beta_vs_spy if beta_vs_spy is not None else 1.0
         factor_exposure = (
@@ -675,15 +750,6 @@ def compute_alpha_candidates(
             if float(scores["regimeScore"]) >= 60.0
             else f"weak fit for {effective_regime.replace('_', ' ')}"
         )
-        backtest = _backtest_alpha_signal(
-            s,
-            spy,
-            sector_series,
-            current_score=alpha_score,
-            risk_mode=risk_mode,
-            regime=effective_regime,
-        )
-
         row = {
             "rank": 0,
             "ticker": c.ticker,
@@ -717,7 +783,7 @@ def compute_alpha_candidates(
             "catalystNotes": ["Catalyst enrichment is applied only to top names."],
             "tradePlan": {},
             "signals": [],
-            "backtests": backtest,
+            "backtests": [],
         }
         row["signals"] = _candidate_signals(row)
         row["tradePlan"] = _trade_plan(row)
@@ -731,7 +797,33 @@ def compute_alpha_candidates(
     for idx, row in enumerate(rows, start=1):
         row["rank"] = idx
 
-    filtered = rows[:limit]
+    if include_lowest > 0:
+        selected = [*rows[:limit], *sorted(rows[-include_lowest:], key=lambda r: r["alphaScore"])]
+        filtered = list({row["ticker"]: row for row in selected}.values())
+    else:
+        filtered = rows[:limit]
+
+    by_ticker = {c.ticker: c for c in constituents_list}
+    for row in filtered:
+        c = by_ticker.get(row["ticker"])
+        if c is None or c.yahooTicker not in close_prices.columns:
+            continue
+        stock = close_prices[c.yahooTicker].dropna()
+        sector_etf = SECTOR_ETFS.get(c.sector, "SPY")
+        sector_series = close_prices[sector_etf].dropna() if sector_etf in close_prices.columns else spy
+        signal_directions = {s["id"]: s["state"] for s in row["signals"]}
+        action = row["tradePlan"]["action"]
+        signal_directions["alpha_score"] = (
+            "bullish" if action == "BUY" else "bearish" if action == "SELL" else "neutral"
+        )
+        row["backtests"] = _backtest_alpha_signal(
+            stock,
+            spy,
+            sector_series,
+            risk_mode=risk_mode,
+            regime_override=regime_override,
+            signal_directions=signal_directions,
+        )
     return {
         "asOf": datetime.now(timezone.utc).isoformat(),
         "marketRegime": {
@@ -742,15 +834,21 @@ def compute_alpha_candidates(
         "candidates": filtered,
         "meta": {
             "total": len(constituents_list),
+            "eligible": len(eligible_constituents),
             "computed": len(rows),
             "returned": len(filtered),
             "skipped": skipped,
+            "priceCoveragePct": round(
+                (len(eligible_constituents) - skipped) / len(eligible_constituents) * 100,
+                1,
+            ) if eligible_constituents else 0.0,
             "minScore": min_score,
             "sector": sector,
             "maxBeta": max_beta,
             "signals": ALPHA_SIGNAL_IDS,
             "warnings": [
-                "Catalyst and revision fields are lightweight proxies, enriched only for top-ranked names."
+                "Catalyst and revision fields are lightweight proxies, enriched only for top-ranked names.",
+                "Catalyst and revision signals are not historically backtested without point-in-time fundamentals.",
             ],
         },
     }

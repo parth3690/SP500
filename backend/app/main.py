@@ -4,6 +4,7 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 import os
 from pathlib import Path
+from threading import Lock
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -26,6 +27,8 @@ from .models import (
     MarketConditionsFetchResponse,
     AlphaCandidatesResponse,
     AlphaWatchlistRequest,
+    AgentBotRunRequest,
+    AgentBotRunResponse,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
@@ -46,13 +49,21 @@ from .services.rsi_scan import (
 )
 from .services.prices import fetch_close_prices
 from .services.valuations import attach_pe_metrics, fetch_pe_metrics
-from .services.sp500 import get_sp500_constituents_cached, get_yahoo_tickers, normalize_yahoo_ticker
+from .services.sp500 import (
+    get_sp500_constituents_cached,
+    get_yahoo_tickers,
+    normalize_user_ticker,
+    normalize_yahoo_ticker,
+)
 from .services.multibagger import scan_ticker
 from .services.market_conditions import fetch_all_market_conditions
 from .services.alpha import alpha_universe_tickers, compute_alpha_candidates
+from .services.agent_bot import run_agent_bot
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
 MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", "366"))
+PRELOAD_DASHBOARD = os.getenv("PRELOAD_DASHBOARD", "false").strip().lower() in ("1", "true", "yes")
+_PRICE_FETCH_LOCK = Lock()
 
 
 def _parse_origins() -> list[str]:
@@ -95,9 +106,55 @@ def _get_shared_price_data(
         if cached is not None:
             return cached
 
-    prices = fetch_close_prices(yahoo_tickers, start, end)
-    cache_set(PRICE_DATA_CACHE, cache_key, prices)
-    return prices
+    with _PRICE_FETCH_LOCK:
+        if not refresh:
+            cached = cache_get(PRICE_DATA_CACHE, cache_key)
+            if cached is not None:
+                return cached
+        prices = fetch_close_prices(yahoo_tickers, start, end)
+        coverage = _price_coverage(prices, yahoo_tickers, min_rows=2)
+        if coverage["coveragePct"] >= 90.0:
+            cache_set(PRICE_DATA_CACHE, cache_key, prices)
+        return prices
+
+
+def _price_coverage(close_prices: Any, tickers: list[str], *, min_rows: int = 2) -> dict[str, Any]:
+    """Describe usable price coverage without treating all-NaN columns as loaded."""
+    requested = list(dict.fromkeys(tickers))
+    columns = set(getattr(close_prices, "columns", []))
+    available = [
+        ticker
+        for ticker in requested
+        if ticker in columns and len(close_prices[ticker].dropna()) >= min_rows
+    ]
+    missing = [ticker for ticker in requested if ticker not in available]
+    return {
+        "requested": len(requested),
+        "available": len(available),
+        "coveragePct": round(len(available) / len(requested) * 100, 1) if requested else 0.0,
+        "missingTickers": missing,
+    }
+
+
+def _require_price_coverage(
+    close_prices: Any,
+    tickers: list[str],
+    *,
+    minimum_pct: float = 90.0,
+    min_rows: int = 2,
+) -> dict[str, Any]:
+    coverage = _price_coverage(close_prices, tickers, min_rows=min_rows)
+    if coverage["coveragePct"] < minimum_pct:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Price data coverage is {coverage['coveragePct']}% "
+                f"({coverage['available']}/{coverage['requested']}). "
+                "The scan was withheld because the result would be incomplete. "
+                "Please refresh after the market data provider recovers."
+            ),
+        )
+    return coverage
 
 
 # ── Background preload on startup ─────────────────────────────────────────
@@ -116,6 +173,7 @@ async def _preload_dashboard_data() -> None:
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=2)
 
         # Pre-compute movers (default 30-day range)
         movers_start = end_date - timedelta(days=DEFAULT_RANGE_DAYS)
@@ -124,12 +182,13 @@ async def _preload_dashboard_data() -> None:
             rows, sector_summary, meta = await run_in_threadpool(
                 compute_movers, constituents_list, close_prices, movers_start, end_date
             )
-            cache_set(MOVERS_CACHE, movers_key, {
-                "rows": rows,
-                "sectorSummary": sector_summary,
-                "meta": meta,
-                "asOf": datetime.now(timezone.utc),
-            })
+            if meta.get("computed", 0) > 0:
+                cache_set(MOVERS_CACHE, movers_key, {
+                    "rows": rows,
+                    "sectorSummary": sector_summary,
+                    "meta": meta,
+                    "asOf": datetime.now(timezone.utc),
+                })
 
         # Pre-compute crossovers
         crossover_key = "crossovers_2.0"
@@ -137,10 +196,11 @@ async def _preload_dashboard_data() -> None:
             c_rows, c_meta = await run_in_threadpool(
                 compute_crossovers, constituents_list, close_prices, threshold_pct=2.0
             )
-            cache_set(CROSSOVERS_CACHE, crossover_key, {
-                "rows": c_rows, "meta": c_meta,
-                "asOf": datetime.now(timezone.utc),
-            })
+            if c_meta.get("computed", 0) > 0:
+                cache_set(CROSSOVERS_CACHE, crossover_key, {
+                    "rows": c_rows, "meta": c_meta,
+                    "asOf": datetime.now(timezone.utc),
+                })
 
         # Pre-compute RSI oversold (below 30) and overbought (above 70)
         rsi_oversold_key = "rsi_oversold_30.0"
@@ -148,19 +208,21 @@ async def _preload_dashboard_data() -> None:
             r_rows, r_meta = await run_in_threadpool(
                 compute_rsi_scan, constituents_list, close_prices, rsi_threshold=30.0
             )
-            cache_set(RSI_SCAN_CACHE, rsi_oversold_key, {
-                "rows": r_rows, "meta": r_meta,
-                "asOf": datetime.now(timezone.utc),
-            })
+            if r_meta.get("computed", 0) > 0:
+                cache_set(RSI_SCAN_CACHE, rsi_oversold_key, {
+                    "rows": r_rows, "meta": r_meta,
+                    "asOf": datetime.now(timezone.utc),
+                })
         rsi_overbought_key = "rsi_overbought_70.0"
         if cache_get(RSI_SCAN_CACHE, rsi_overbought_key) is None:
             ob_rows, ob_meta = await run_in_threadpool(
                 compute_rsi_scan_overbought, constituents_list, close_prices, rsi_threshold=70.0
             )
-            cache_set(RSI_SCAN_CACHE, rsi_overbought_key, {
-                "rows": ob_rows, "meta": ob_meta,
-                "asOf": datetime.now(timezone.utc),
-            })
+            if ob_meta.get("computed", 0) > 0:
+                cache_set(RSI_SCAN_CACHE, rsi_overbought_key, {
+                    "rows": ob_rows, "meta": ob_meta,
+                    "asOf": datetime.now(timezone.utc),
+                })
 
         # Pre-compute Daily RSI oversold (below 30) and overbought (above 70)
         daily_oversold_key = "rsi_daily_oversold_30.0"
@@ -168,19 +230,21 @@ async def _preload_dashboard_data() -> None:
             do_rows, do_meta = await run_in_threadpool(
                 compute_rsi_scan_daily_oversold, constituents_list, close_prices, rsi_threshold=30.0
             )
-            cache_set(RSI_SCAN_CACHE, daily_oversold_key, {
-                "rows": do_rows, "meta": do_meta,
-                "asOf": datetime.now(timezone.utc),
-            })
+            if do_meta.get("computed", 0) > 0:
+                cache_set(RSI_SCAN_CACHE, daily_oversold_key, {
+                    "rows": do_rows, "meta": do_meta,
+                    "asOf": datetime.now(timezone.utc),
+                })
         daily_overbought_key = "rsi_daily_overbought_70.0"
         if cache_get(RSI_SCAN_CACHE, daily_overbought_key) is None:
             dob_rows, dob_meta = await run_in_threadpool(
                 compute_rsi_scan_daily_overbought, constituents_list, close_prices, rsi_threshold=70.0
             )
-            cache_set(RSI_SCAN_CACHE, daily_overbought_key, {
-                "rows": dob_rows, "meta": dob_meta,
-                "asOf": datetime.now(timezone.utc),
-            })
+            if dob_meta.get("computed", 0) > 0:
+                cache_set(RSI_SCAN_CACHE, daily_overbought_key, {
+                    "rows": dob_rows, "meta": dob_meta,
+                    "asOf": datetime.now(timezone.utc),
+                })
 
     except Exception as e:
         # Non-fatal: first request will just compute on demand
@@ -191,7 +255,8 @@ async def _preload_dashboard_data() -> None:
 async def startup_event() -> None:
     """Fresh Yahoo-backed research/prices after each process start (avoids stale cached quotes)."""
     clear_research_and_price_caches()
-    asyncio.create_task(_preload_dashboard_data())
+    if PRELOAD_DASHBOARD:
+        asyncio.create_task(_preload_dashboard_data())
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────
@@ -235,7 +300,7 @@ def _custom_alpha_constituents(
     seen: set[str] = set()
 
     for raw in tickers:
-        display = raw.strip().upper()
+        display = normalize_user_ticker(raw)
         if not display:
             continue
         yahoo = normalize_yahoo_ticker(display)
@@ -281,6 +346,7 @@ async def movers(
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=2)
         rows, sector_summary, meta = await run_in_threadpool(
             compute_movers, constituents_list, close_prices, start_date, end_date
         )
@@ -291,7 +357,8 @@ async def movers(
             "meta": meta,
             "asOf": datetime.now(timezone.utc),
         }
-        cache_set(MOVERS_CACHE, cache_key, cached)
+        if meta.get("computed", 0) > 0:
+            cache_set(MOVERS_CACHE, cache_key, cached)
 
     rows = cached["rows"]
     gainers = _ranked(rows, descending=True, limit=limit)
@@ -345,6 +412,7 @@ async def crossovers(
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=200)
         rows, meta = await run_in_threadpool(
             compute_crossovers, constituents_list, close_prices, threshold_pct=threshold
         )
@@ -354,7 +422,8 @@ async def crossovers(
             "meta": meta,
             "asOf": datetime.now(timezone.utc),
         }
-        cache_set(CROSSOVERS_CACHE, cache_key, cached)
+        if meta.get("computed", 0) > 0:
+            cache_set(CROSSOVERS_CACHE, cache_key, cached)
 
     rows = cached["rows"]
     near_golden = [CrossoverRow(**r) for r in rows if r["signal"] == "near_golden_cross"]
@@ -391,6 +460,7 @@ async def rsi_oversold(
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=40)
         rows, meta = await run_in_threadpool(
             compute_rsi_scan, constituents_list, close_prices, rsi_threshold=threshold
         )
@@ -400,7 +470,8 @@ async def rsi_oversold(
             "meta": meta,
             "asOf": datetime.now(timezone.utc),
         }
-        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+        if meta.get("computed", 0) > 0:
+            cache_set(RSI_SCAN_CACHE, cache_key, cached)
 
     return OversoldResponse(
         asOf=cached["asOf"],
@@ -432,6 +503,7 @@ async def rsi_overbought(
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=40)
         rows, meta = await run_in_threadpool(
             compute_rsi_scan_overbought, constituents_list, close_prices, rsi_threshold=threshold
         )
@@ -441,7 +513,8 @@ async def rsi_overbought(
             "meta": meta,
             "asOf": datetime.now(timezone.utc),
         }
-        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+        if meta.get("computed", 0) > 0:
+            cache_set(RSI_SCAN_CACHE, cache_key, cached)
 
     return OverboughtResponse(
         asOf=cached["asOf"],
@@ -471,6 +544,7 @@ async def rsi_daily_oversold(
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=20)
         rows, meta = await run_in_threadpool(
             compute_rsi_scan_daily_oversold, constituents_list, close_prices, rsi_threshold=threshold
         )
@@ -479,7 +553,8 @@ async def rsi_daily_oversold(
             "meta": meta,
             "asOf": datetime.now(timezone.utc),
         }
-        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+        if meta.get("computed", 0) > 0:
+            cache_set(RSI_SCAN_CACHE, cache_key, cached)
 
     return OversoldResponse(
         asOf=cached["asOf"],
@@ -509,6 +584,7 @@ async def rsi_daily_overbought(
         close_prices = await run_in_threadpool(
             _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
         )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=20)
         rows, meta = await run_in_threadpool(
             compute_rsi_scan_daily_overbought, constituents_list, close_prices, rsi_threshold=threshold
         )
@@ -517,7 +593,8 @@ async def rsi_daily_overbought(
             "meta": meta,
             "asOf": datetime.now(timezone.utc),
         }
-        cache_set(RSI_SCAN_CACHE, cache_key, cached)
+        if meta.get("computed", 0) > 0:
+            cache_set(RSI_SCAN_CACHE, cache_key, cached)
 
     return OverboughtResponse(
         asOf=cached["asOf"],
@@ -539,7 +616,9 @@ async def research(
     Accepts optional start/end date range for custom analysis periods.
     If FMP_API_KEY is set, merges a live quote from Financial Modeling Prep into header fields.
     """
-    ticker_upper = ticker.strip().upper()
+    ticker_upper = normalize_user_ticker(ticker)
+    if not ticker_upper:
+        raise HTTPException(status_code=400, detail="A valid US ticker is required")
 
     end_date = end or date.today()
     start_date = start or (end_date - timedelta(days=365))
@@ -713,11 +792,24 @@ async def alpha_candidates(
     start_date = end_date - timedelta(days=760)
     price_key = ("alpha_prices", start_date.isoformat(), end_date.isoformat())
     close_prices = None if refresh else cache_get(ALPHA_CACHE, price_key)
+    fetched_prices = close_prices is None
     if close_prices is None:
         tickers = alpha_universe_tickers(constituents_list)
         close_prices = await run_in_threadpool(fetch_close_prices, tickers, start_date, end_date)
-        if not getattr(close_prices, "empty", True):
-            cache_set(ALPHA_CACHE, price_key, close_prices)
+
+    coverage = _require_price_coverage(
+        close_prices,
+        [c.yahooTicker for c in constituents_list],
+        minimum_pct=90.0,
+        min_rows=220,
+    )
+    if "SPY" not in getattr(close_prices, "columns", []):
+        raise HTTPException(
+            status_code=503,
+            detail="SPY benchmark history is unavailable, so alpha ranking was withheld.",
+        )
+    if fetched_prices:
+        cache_set(ALPHA_CACHE, price_key, close_prices)
 
     payload = await run_in_threadpool(
         compute_alpha_candidates,
@@ -731,7 +823,8 @@ async def alpha_candidates(
         regime_override=regime,
         enrich_top=enrich_top,
     )
-    if payload.get("meta", {}).get("computed", 0) > 0 or not payload.get("meta", {}).get("warnings"):
+    payload["meta"] = {**payload["meta"], **coverage, "status": "complete"}
+    if payload.get("meta", {}).get("status") == "complete":
         cache_set(ALPHA_CACHE, cache_key, payload)
     return AlphaCandidatesResponse(**payload)
 
@@ -765,10 +858,25 @@ async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResp
     price_tickers = alpha_universe_tickers(custom_constituents)
     price_key = ("alpha_watchlist_prices", tuple(price_tickers), start_date.isoformat(), end_date.isoformat())
     close_prices = None if request.refresh else cache_get(ALPHA_CACHE, price_key)
+    fetched_prices = close_prices is None
     if close_prices is None:
         close_prices = await run_in_threadpool(fetch_close_prices, price_tickers, start_date, end_date)
-        if not getattr(close_prices, "empty", True):
-            cache_set(ALPHA_CACHE, price_key, close_prices)
+
+    coverage = _price_coverage(
+        close_prices,
+        [c.yahooTicker for c in custom_constituents],
+        min_rows=220,
+    )
+    if coverage["available"] == 0 or "SPY" not in getattr(close_prices, "columns", []):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Reliable stock and SPY price history is unavailable, so the watchlist "
+                "ranking was withheld. Please refresh after the data provider recovers."
+            ),
+        )
+    if fetched_prices and coverage["coveragePct"] >= 80.0:
+        cache_set(ALPHA_CACHE, price_key, close_prices)
 
     payload = await run_in_threadpool(
         compute_alpha_candidates,
@@ -784,13 +892,43 @@ async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResp
     )
     payload["meta"] = {
         **payload["meta"],
+        **coverage,
         "universe": "watchlist",
         "requestedTickers": len(request.tickers),
         "validTickers": len(custom_constituents),
+        "status": "complete" if coverage["coveragePct"] == 100.0 else "partial",
+        "warnings": [
+            *payload["meta"].get("warnings", []),
+            *(
+                [
+                    f"{coverage['available']} of {coverage['requested']} watchlist tickers have "
+                    "enough history; missing tickers were excluded."
+                ]
+                if coverage["coveragePct"] < 100.0
+                else []
+            ),
+        ],
     }
-    if payload.get("meta", {}).get("computed", 0) > 0 or not payload.get("meta", {}).get("warnings"):
+    if payload.get("meta", {}).get("status") == "complete":
         cache_set(ALPHA_CACHE, cache_key, payload)
     return AlphaCandidatesResponse(**payload)
+
+
+@app.post("/api/agent-bot/run", response_model=AgentBotRunResponse)
+async def agent_bot_run(request: AgentBotRunRequest) -> AgentBotRunResponse:
+    """Run the autonomous agent bot over a watchlist or the full S&P 500."""
+    payload = await run_in_threadpool(
+        run_agent_bot,
+        request.tickers,
+        mode=request.mode,
+        risk_mode=request.riskMode,
+        regime=request.regime,
+        top_n=request.topN,
+        min_score=request.minScore,
+        history=[h.model_dump() for h in request.history],
+        refresh=request.refresh,
+    )
+    return AgentBotRunResponse(**payload)
 
 
 @app.get("/api/multibagger/{ticker}", response_model=MultibaggerResponse)
@@ -800,9 +938,10 @@ async def multibagger_scan(
     refresh: bool = Query(False),
 ) -> MultibaggerResponse:
     """Evaluate one US ticker against the multibagger-style fundamental checklist."""
-    sym = normalize_yahoo_ticker(ticker.strip())
-    if not sym:
-        raise HTTPException(status_code=400, detail="Ticker is required")
+    display_ticker = normalize_user_ticker(ticker)
+    if not display_ticker:
+        raise HTTPException(status_code=400, detail="A valid US ticker is required")
+    sym = normalize_yahoo_ticker(display_ticker)
 
     cache_key = ("multibagger", sym, deep)
     if not refresh:
@@ -827,8 +966,9 @@ async def multibagger_scan(
 async def market_conditions_fetch(refresh: bool = Query(False)) -> MarketConditionsFetchResponse:
     """Fetch live readings for all market peak signpost criteria (best effort)."""
     cache_key = "market_conditions_fetch"
+    previous = cache_get(MARKET_CONDITIONS_CACHE, cache_key)
     if not refresh:
-        cached = cache_get(MARKET_CONDITIONS_CACHE, cache_key)
+        cached = previous
         if cached is not None:
             return MarketConditionsFetchResponse(**cached)
 
@@ -837,5 +977,19 @@ async def market_conditions_fetch(refresh: bool = Query(False)) -> MarketConditi
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Market conditions fetch failed: {e}") from e
 
-    cache_set(MARKET_CONDITIONS_CACHE, cache_key, payload)
+    fetched_count = payload.get("meta", {}).get("fetchedCount", 0)
+    if fetched_count > 0:
+        cache_set(MARKET_CONDITIONS_CACHE, cache_key, payload)
+    elif previous is not None:
+        payload = {
+            **previous,
+            "meta": {
+                **previous.get("meta", {}),
+                "stale": True,
+                "warnings": [
+                    *previous.get("meta", {}).get("warnings", []),
+                    "Refresh returned no usable data; showing the last successful snapshot.",
+                ],
+            },
+        }
     return MarketConditionsFetchResponse(**payload)

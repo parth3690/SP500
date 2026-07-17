@@ -77,7 +77,7 @@ def compute_crossovers(
             "signal": signal,
         })
 
-    skipped += total - len(available) - skipped
+    unavailable = total - len(available)
 
     rows.sort(key=lambda r: abs(r["gapPct"]))
 
@@ -87,7 +87,7 @@ def compute_crossovers(
     meta = {
         "total": total,
         "computed": len(available) - skipped,
-        "skipped": total - len(available) + skipped,
+        "skipped": unavailable + skipped,
         "nearGoldenCross": near_golden,
         "nearDeathCross": near_death,
         "thresholdPct": threshold_pct,

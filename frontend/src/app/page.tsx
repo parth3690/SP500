@@ -8,10 +8,12 @@ const Dashboard = dynamic(() => import("@/components/Dashboard"), { ssr: false }
 const MarketIndicators = dynamic(() => import("@/components/MarketIndicators"), { ssr: false });
 const MultibaggerScanner = dynamic(() => import("@/components/MultibaggerScanner"), { ssr: false });
 const AlphaCandidates = dynamic(() => import("@/components/AlphaCandidates"), { ssr: false });
+const AgentBot = dynamic(() => import("@/components/AgentBot"), { ssr: false });
 
-type AppTab = "alpha" | "sp500" | "indicators" | "multibagger";
+type AppTab = "agent" | "alpha" | "sp500" | "indicators" | "multibagger";
 
 const TABS: { id: AppTab; label: string }[] = [
+  { id: "agent", label: "Agent Bot" },
   { id: "alpha", label: "Alpha Candidates" },
   { id: "sp500", label: "S&P 500 Dashboard" },
   { id: "indicators", label: "Market Indicators" },
@@ -43,6 +45,7 @@ export default function Page() {
         </div>
       </nav>
 
+      {tab === "agent" ? <AgentBot /> : null}
       {tab === "alpha" ? <AlphaCandidates /> : null}
       {tab === "sp500" ? <Dashboard /> : null}
       {tab === "indicators" ? <MarketIndicators /> : null}

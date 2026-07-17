@@ -1,0 +1,350 @@
+from __future__ import annotations
+
+import unittest
+from datetime import date, datetime, timezone
+from unittest.mock import patch
+
+import numpy as np
+import pandas as pd
+from pydantic import ValidationError
+
+from app.models import AgentBotHistoryItem, AgentBotRunResponse, Constituent
+from app.services.agent_bot import (
+    _compute_outcomes,
+    _empty_response,
+    _fetch_catalyst_data,
+    _forward_journal,
+    _generate_alerts,
+    run_agent_bot,
+)
+from app.services.alpha import _next_monthly_expiry, _score_core, _trade_plan
+from app.services.crossovers import compute_crossovers
+from app.services.market_conditions import _download_close, _risk_assessment
+from app.services.prices import fetch_close_prices, fetch_fmp_price_history
+
+
+class AgentContractTests(unittest.TestCase):
+    def test_empty_watchlist_abstains_without_network_calls(self) -> None:
+        with patch(
+            "app.services.agent_bot.get_sp500_constituents_cached",
+            side_effect=AssertionError("network should not be called"),
+        ):
+            payload = run_agent_bot([], mode="watchlist")
+
+        parsed = AgentBotRunResponse(**payload)
+        self.assertEqual(parsed.meta["status"], "insufficient_data")
+        self.assertEqual(parsed.forwardJournal.aggregates["6M"].count, 0)
+        self.assertEqual(parsed.briefing.counts["sell"], 0)
+
+    def test_empty_response_always_matches_api_contract(self) -> None:
+        parsed = AgentBotRunResponse(**_empty_response("sp500", error="No data"))
+        self.assertEqual(parsed.briefing.riskLevel, "Unknown")
+        self.assertEqual(parsed.recommendations, [])
+
+    def test_history_rejects_non_tradeable_prices_and_actions(self) -> None:
+        with self.assertRaises(ValidationError):
+            AgentBotHistoryItem(
+                ticker="AAPL",
+                action="HOLD",
+                entryPrice=0,
+                recommendedAt=datetime.now(timezone.utc),
+            )
+
+    def test_synthetic_agent_run_matches_full_recommendation_contract(self) -> None:
+        index = pd.bdate_range("2024-10-01", periods=330)
+        prices = pd.DataFrame(
+            {
+                "AAPL": np.linspace(100.0, 220.0, len(index)),
+                "SPY": np.linspace(100.0, 120.0, len(index)),
+                "XLK": np.linspace(100.0, 130.0, len(index)),
+            },
+            index=index,
+        )
+        constituents = [
+            Constituent(
+                ticker="AAPL",
+                yahooTicker="AAPL",
+                companyName="Apple",
+                sector="Information Technology",
+            )
+        ]
+        market = {
+            "riskLevel": "Normal",
+            "coveragePct": 75,
+            "triggeredCount": 1,
+            "confidence": "Medium",
+            "asOf": "2026-01-01T00:00:00+00:00",
+            "warnings": [],
+        }
+        with (
+            patch("app.services.agent_bot.get_sp500_constituents_cached", return_value=constituents),
+            patch("app.services.agent_bot._market_conditions_summary", return_value=market),
+            patch("app.services.agent_bot._cached_close_prices", return_value=prices),
+            patch("app.services.agent_bot._enrich_with_catalysts"),
+        ):
+            payload = run_agent_bot(["AAPL"], mode="watchlist", top_n=1, min_score=0)
+
+        parsed = AgentBotRunResponse(**payload)
+        self.assertEqual(len(parsed.recommendations), 1)
+        recommendation = parsed.recommendations[0]
+        self.assertEqual(recommendation.ticker, "AAPL")
+        self.assertTrue(recommendation.horizon)
+        self.assertGreater(len(recommendation.backtests), 0)
+
+
+class TradeDirectionTests(unittest.TestCase):
+    @staticmethod
+    def _candidate(price: float) -> dict:
+        return {
+            "ticker": "SHORT",
+            "currentPrice": price,
+            "alphaScore": 30.0,
+            "tradePlan": {
+                "action": "SELL",
+                "stop": 110.0,
+                "target1": 90.0,
+                "target2": 80.0,
+            },
+            "catalystData": {},
+        }
+
+    def test_sell_alerts_use_short_direction(self) -> None:
+        near_stop = _generate_alerts([self._candidate(109.0)])
+        self.assertIn("stop proximity", {alert["type"] for alert in near_stop})
+        self.assertNotIn("target hit", {alert["type"] for alert in near_stop})
+
+        near_target = _generate_alerts([self._candidate(91.0)])
+        self.assertIn("target hit", {alert["type"] for alert in near_target})
+        self.assertNotIn("stop proximity", {alert["type"] for alert in near_target})
+
+    def test_sell_confidence_rewards_bearish_conviction(self) -> None:
+        row = {
+            "currentPrice": 100.0,
+            "alphaScore": 30.0,
+            "riskScore": 70.0,
+            "expectedReturn20d": -6.0,
+            "rsVsSpy20d": -10.0,
+            "volatility20d": 20.0,
+            "betaVsSpy": 1.0,
+        }
+        plan = _trade_plan(row)
+        self.assertEqual(plan["action"], "SELL")
+        self.assertGreater(plan["confidence"], 65.0)
+        self.assertGreater(plan["stop"], plan["entry"])
+        self.assertLess(plan["target1"], plan["entry"])
+
+    def test_monthly_option_expiry_is_third_friday(self) -> None:
+        self.assertEqual(
+            _next_monthly_expiry(45, as_of=date(2026, 1, 1)),
+            "2026-02-20",
+        )
+
+    def test_downtrend_scores_as_bearish(self) -> None:
+        scores = _score_core(
+            momentum20=-10,
+            momentum63=-20,
+            rs_spy20=-8,
+            rs_sector20=-5,
+            price=80,
+            sma50=100,
+            sma200=120,
+            volatility20=25,
+            beta_vs_spy=1,
+            drawdown63=-20,
+            sector_strength20=-2,
+            regime="risk_off",
+            risk_mode="balanced",
+        )
+        self.assertLessEqual(float(scores["trendScore"]), 30.0)
+
+
+class JournalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.index = pd.bdate_range("2026-01-02", periods=10)
+        self.prices = pd.DataFrame(
+            {"AAPL": np.linspace(100.0, 110.0, len(self.index))},
+            index=self.index,
+        )
+
+    def test_future_horizons_remain_blank_until_they_mature(self) -> None:
+        history = [{
+            "ticker": "AAPL",
+            "action": "BUY",
+            "entryPrice": 100.0,
+            "recommendedAt": "2026-01-02T15:00:00+00:00",
+            "closed": False,
+        }]
+        journal = _forward_journal(history, self.prices)
+        returns = journal["entries"][0]["forwardReturns"]
+        self.assertIsNotNone(returns["1W"])
+        self.assertIsNone(returns["1M"])
+        self.assertIsNone(returns["6M"])
+
+    def test_only_buy_and_sell_calls_count_as_outcomes(self) -> None:
+        history = [
+            {"ticker": "AAPL", "action": "WATCH", "entryPrice": 100.0, "recommendedAt": "2026-01-02"},
+            {"ticker": "AAPL", "action": "AVOID", "entryPrice": 100.0, "recommendedAt": "2026-01-02"},
+            {"ticker": "AAPL", "action": "SELL", "entryPrice": 100.0, "recommendedAt": "2026-01-02"},
+        ]
+        outcomes = _compute_outcomes(history, self.prices)
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0]["action"], "SELL")
+        self.assertLess(outcomes[0]["returnPct"], 0)
+
+    def test_closed_outcome_uses_recorded_exit_price(self) -> None:
+        history = [{
+            "ticker": "AAPL",
+            "action": "BUY",
+            "entryPrice": 100.0,
+            "recommendedAt": "2026-01-02",
+            "closed": True,
+            "exitPrice": 105.0,
+        }]
+        outcome = _compute_outcomes(history, self.prices)[0]
+        self.assertEqual(outcome["currentPrice"], 105.0)
+        self.assertEqual(outcome["returnPct"], 5.0)
+
+
+class DataIntegrityTests(unittest.TestCase):
+    def test_market_risk_is_withheld_when_coverage_is_too_low(self) -> None:
+        coverage, risk, confidence = _risk_assessment(4, 4, 16)
+        self.assertEqual(coverage, 25)
+        self.assertEqual(risk, "Unknown")
+        self.assertEqual(confidence, "Insufficient")
+
+        _, risk, confidence = _risk_assessment(12, 7, 16)
+        self.assertEqual(risk, "Elevated")
+        self.assertEqual(confidence, "Medium")
+
+    def test_growth_value_is_never_used_as_an_earnings_date(self) -> None:
+        info = {"earningsQuarterlyGrowth": 0.25, "shortName": "Example"}
+        with patch("yfinance.Ticker") as ticker:
+            ticker.return_value.info = info
+            catalyst = _fetch_catalyst_data("TEST", 100.0)
+        self.assertIsNone(catalyst["earningsDate"])
+
+    def test_crossover_metadata_counts_missing_symbols_once(self) -> None:
+        index = pd.bdate_range("2025-01-01", periods=220)
+        prices = pd.DataFrame({"AAA": np.linspace(100, 102, len(index))}, index=index)
+        constituents = [
+            Constituent(ticker="AAA", yahooTicker="AAA", companyName="A", sector="Industrials"),
+            Constituent(ticker="BBB", yahooTicker="BBB", companyName="B", sector="Industrials"),
+        ]
+        _, meta = compute_crossovers(constituents, prices, threshold_pct=10.0)
+        self.assertEqual(meta["computed"], 1)
+        self.assertEqual(meta["skipped"], 1)
+
+    def test_market_close_falls_back_when_yahoo_returns_empty(self) -> None:
+        fred_rows = [("2026-01-02", 100.0), ("2026-01-05", 101.0)]
+        with (
+            patch("app.services.market_conditions.yf.Ticker") as ticker,
+            patch("app.services.market_conditions._fred_series", return_value=fred_rows),
+        ):
+            ticker.return_value.history.return_value = pd.DataFrame()
+            closes = _download_close("SPY", period="3mo")
+
+        self.assertIsNotNone(closes)
+        self.assertEqual(len(closes), 2)
+        self.assertEqual(float(closes.iloc[-1]), 101.0)
+
+    def test_fmp_history_is_normalized_to_ohlcv(self) -> None:
+        response_rows = [
+            {
+                "date": "2026-01-05",
+                "open": 99.0,
+                "high": 102.0,
+                "low": 98.0,
+                "close": 101.0,
+                "volume": 12345,
+            }
+        ]
+        with (
+            patch.dict("os.environ", {"FMP_API_KEY": "test-key"}),
+            patch("app.services.prices.httpx.get") as get,
+        ):
+            get.return_value.json.return_value = response_rows
+            history = fetch_fmp_price_history("AAPL", date(2026, 1, 1), date(2026, 1, 6))
+
+        get.return_value.raise_for_status.assert_called_once()
+        self.assertEqual(list(history.columns), ["Open", "High", "Low", "Close", "Volume"])
+        self.assertEqual(float(history.iloc[0]["Close"]), 101.0)
+        self.assertEqual(history.attrs["source"], "Financial Modeling Prep")
+
+    def test_missing_yahoo_symbols_are_retried_in_small_batches(self) -> None:
+        index = pd.bdate_range("2026-01-02", periods=3)
+        initial = pd.DataFrame({"AAA": [100.0, 101.0, 102.0]}, index=index)
+        retry = pd.DataFrame({"BBB": [50.0, 51.0, 52.0]}, index=index)
+        with (
+            patch.dict(
+                "os.environ",
+                {"YAHOO_RETRY_CHUNK_SIZE": "1", "FMP_API_KEY": ""},
+            ),
+            patch("app.services.prices._download_chunk", side_effect=[initial, retry]) as download,
+        ):
+            prices = fetch_close_prices(
+                ["AAA", "BBB"],
+                date(2026, 1, 1),
+                date(2026, 1, 10),
+            )
+
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(set(prices.columns), {"AAA", "BBB"})
+        self.assertEqual(prices.attrs["coveragePct"], 100.0)
+
+    def test_fmp_fills_small_residual_from_a_large_request(self) -> None:
+        index = pd.bdate_range("2026-01-02", periods=3)
+        initial = pd.DataFrame({"AAA": [100.0, 101.0, 102.0]}, index=index)
+        fmp = pd.DataFrame({"BBB": [50.0, 51.0, 52.0]}, index=index)
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "YAHOO_RETRY_CHUNK_SIZE": "1",
+                    "YAHOO_RETRY_PASSES": "1",
+                    "FMP_API_KEY": "test-key",
+                    "FMP_PRICE_FALLBACK_MAX_TICKERS": "1",
+                },
+            ),
+            patch(
+                "app.services.prices._download_chunk",
+                side_effect=[initial, pd.DataFrame()],
+            ),
+            patch("app.services.prices._fetch_fmp_close_frame", return_value=fmp) as fallback,
+        ):
+            prices = fetch_close_prices(
+                ["AAA", "BBB"],
+                date(2026, 1, 1),
+                date(2026, 1, 10),
+            )
+
+        fallback.assert_called_once()
+        self.assertEqual(set(prices.columns), {"AAA", "BBB"})
+        self.assertEqual(prices.attrs["coveragePct"], 100.0)
+
+    def test_agent_abstains_when_watchlist_price_coverage_is_partial(self) -> None:
+        index = pd.bdate_range("2025-01-01", periods=250)
+        prices = pd.DataFrame(
+            {
+                "AAA": np.linspace(100.0, 120.0, len(index)),
+                "SPY": np.linspace(100.0, 110.0, len(index)),
+            },
+            index=index,
+        )
+        constituents = [
+            Constituent(ticker="AAA", yahooTicker="AAA", companyName="A", sector="Industrials"),
+            Constituent(ticker="BBB", yahooTicker="BBB", companyName="B", sector="Industrials"),
+        ]
+        with (
+            patch("app.services.agent_bot.get_sp500_constituents_cached", return_value=constituents),
+            patch("app.services.agent_bot._market_conditions_summary", return_value={"riskLevel": "Normal"}),
+            patch("app.services.agent_bot._cached_close_prices", return_value=prices),
+        ):
+            payload = run_agent_bot(["AAA", "BBB"], mode="watchlist", min_score=0)
+
+        self.assertEqual(payload["meta"]["status"], "insufficient_data")
+        self.assertEqual(payload["meta"]["priceCoveragePct"], 50.0)
+        self.assertEqual(payload["recommendations"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

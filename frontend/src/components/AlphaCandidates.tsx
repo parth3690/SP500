@@ -555,7 +555,11 @@ export default function AlphaCandidates() {
           <Metric label="Regime" value={String(data.marketRegime.effectiveState).replace("_", " ")} detail={data.marketRegime.spyTrend} />
           <Metric label="SPY drawdown" value={data.marketRegime.spyDrawdownPct == null ? "N/A" : formatPct(data.marketRegime.spyDrawdownPct)} />
           <Metric label="Candidates" value={`${data.meta.returned} / ${data.meta.computed}`} detail={`${data.meta.total} total`} />
-          <Metric label="Signal set" value={String(data.meta.signals.length)} detail={data.marketRegime.riskMode} />
+          <Metric
+            label="Price coverage"
+            value={data.meta.coveragePct == null ? "N/A" : `${data.meta.coveragePct}%`}
+            detail={data.meta.status ?? data.marketRegime.riskMode}
+          />
         </div>
       ) : null}
 
