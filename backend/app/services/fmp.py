@@ -92,12 +92,17 @@ def fetch_fmp_research_fundamentals(symbol: str) -> dict[str, Any]:
     }
 
 
-def merge_fmp_live_into_research(payload: dict[str, Any], *, fmp_symbol_str: str) -> None:
+def merge_fmp_live_into_research(
+    payload: dict[str, Any],
+    *,
+    fmp_symbol_str: str,
+    quote: Optional[dict[str, Any]] = None,
+) -> None:
     """
     If FMP returns a quote, overlay header fields with live price / change / volume.
     Preserves Yahoo last-bar close as chartLastClose for chart context.
     """
-    q = fetch_fmp_quote(fmp_symbol_str)
+    q = quote or fetch_fmp_quote(fmp_symbol_str)
     if not q:
         return
 

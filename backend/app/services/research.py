@@ -8,7 +8,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from .fmp import fetch_fmp_research_fundamentals, fmp_symbol, merge_fmp_live_into_research
+from .fmp import fetch_fmp_quote, fetch_fmp_research_fundamentals, fmp_symbol, merge_fmp_live_into_research
 from .indicators import (
     compute_bollinger_series,
     compute_ema_series,
@@ -20,6 +20,49 @@ from .prices import fetch_fmp_price_history
 
 
 # ── Data Fetching ──────────────────────────────────────────────────────────
+
+
+def _positive_number(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _price_candidates_from_quote(quote: Optional[dict[str, Any]]) -> list[float]:
+    if not quote:
+        return []
+    candidates: list[float] = []
+    for key in ("price", "previousClose"):
+        value = _positive_number(quote.get(key))
+        if value is not None:
+            candidates.append(value)
+    return candidates
+
+
+def _history_quote_mismatch(history: pd.DataFrame, quote: Optional[dict[str, Any]]) -> bool:
+    """
+    Catch impossible mixed-source payloads, e.g. a $28 live quote with a $164 daily
+    history. Daily bars may be previous close or intraday, so accept either quote
+    price or previousClose when available.
+    """
+    candidates = _price_candidates_from_quote(quote)
+    if history.empty or "Close" not in history.columns or not candidates:
+        return False
+    close = _positive_number(history["Close"].dropna().iloc[-1])
+    if close is None:
+        return False
+    distance = min(abs(close - candidate) / candidate for candidate in candidates)
+    return distance > 0.35
+
+
+def _sanitize_fundamentals(fundamentals: dict[str, Any]) -> dict[str, Any]:
+    """Normalize valuation fields where non-positive ratios are not meaningful."""
+    cleaned = dict(fundamentals)
+    for key in ("trailingPE", "forwardPE"):
+        cleaned[key] = _positive_number(cleaned.get(key))
+    return cleaned
 
 
 def fetch_single_ticker_ohlcv(
@@ -106,12 +149,12 @@ def fetch_ticker_info(yahoo_ticker: str) -> dict[str, Any]:
     except Exception:
         pass
     if all(yahoo_info.get(key) is not None for key in ("trailingPE", "forwardPE", "marketCap", "beta")):
-        return yahoo_info
+        return _sanitize_fundamentals(yahoo_info)
     fallback = fetch_fmp_research_fundamentals(yahoo_ticker)
     for key, value in fallback.items():
         if yahoo_info.get(key) is None and value is not None:
             yahoo_info[key] = value
-    return yahoo_info
+    return _sanitize_fundamentals(yahoo_info)
 
 
 # ── Utility ────────────────────────────────────────────────────────────────
@@ -840,12 +883,28 @@ def compute_research(
     if start_date is None:
         start_date = end_date - timedelta(days=365)
 
-    # Fetch OHLCV and fundamentals in parallel
+    fmp_symbol_str = fmp_symbol(yahoo_ticker)
+    live_quote: Optional[dict[str, Any]] = None
+
+    # Fetch OHLCV, fundamentals, and live quote in parallel.
     with ThreadPoolExecutor(max_workers=2) as pool:
         ohlcv_future = pool.submit(fetch_single_ticker_ohlcv, yahoo_ticker, start_date, end_date)
         info_future = pool.submit(fetch_ticker_info, yahoo_ticker)
+        quote_future = pool.submit(fetch_fmp_quote, fmp_symbol_str)
         df = ohlcv_future.result()
         fundamentals = info_future.result()
+        live_quote = quote_future.result()
+
+    if _history_quote_mismatch(df, live_quote):
+        fetch_start = start_date - timedelta(days=250)
+        fetch_end = end_date + timedelta(days=1)
+        fallback_df = fetch_fmp_price_history(yahoo_ticker, fetch_start, fetch_end)
+        if fallback_df.empty or _history_quote_mismatch(fallback_df, live_quote):
+            raise ValueError(
+                f"Live quote and daily price history disagree for {yahoo_ticker}; "
+                "research was withheld to avoid inaccurate signals."
+            )
+        df = fallback_df
 
     close = df["Close"]
     open_ = df["Open"]
@@ -1002,5 +1061,5 @@ def compute_research(
         "strategies": strategies,
     }
 
-    merge_fmp_live_into_research(out, fmp_symbol_str=fmp_symbol(yahoo_ticker))
+    merge_fmp_live_into_research(out, fmp_symbol_str=fmp_symbol_str, quote=live_quote)
     return out

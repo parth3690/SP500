@@ -21,6 +21,7 @@ from app.services.alpha import _next_monthly_expiry, _score_core, _trade_plan
 from app.services.crossovers import compute_crossovers
 from app.services.market_conditions import _download_close, _risk_assessment
 from app.services.prices import fetch_close_prices, fetch_fmp_price_history
+from app.services.research import _sanitize_fundamentals, compute_research
 
 
 class AgentContractTests(unittest.TestCase):
@@ -206,6 +207,20 @@ class JournalTests(unittest.TestCase):
 
 
 class DataIntegrityTests(unittest.TestCase):
+    @staticmethod
+    def _ohlcv_frame(close_values: np.ndarray) -> pd.DataFrame:
+        index = pd.bdate_range("2025-01-02", periods=len(close_values))
+        return pd.DataFrame(
+            {
+                "Open": close_values * 0.99,
+                "High": close_values * 1.02,
+                "Low": close_values * 0.98,
+                "Close": close_values,
+                "Volume": np.full(len(close_values), 1_000_000),
+            },
+            index=index,
+        )
+
     def test_market_risk_is_withheld_when_coverage_is_too_low(self) -> None:
         coverage, risk, confidence = _risk_assessment(4, 4, 16)
         self.assertEqual(coverage, 25)
@@ -344,6 +359,55 @@ class DataIntegrityTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["status"], "insufficient_data")
         self.assertEqual(payload["meta"]["priceCoveragePct"], 50.0)
         self.assertEqual(payload["recommendations"], [])
+
+    def test_research_refetches_history_when_live_quote_mismatch_is_impossible(self) -> None:
+        bad_history = self._ohlcv_frame(np.linspace(150.0, 164.0, 260))
+        good_history = self._ohlcv_frame(np.linspace(34.0, 28.09, 260))
+        good_history.attrs["source"] = "Financial Modeling Prep"
+
+        fundamentals = {
+            "trailingPE": 30.0,
+            "forwardPE": 20.0,
+            "marketCap": 6_500_000_000,
+            "fiftyTwoWeekHigh": 70.43,
+            "fiftyTwoWeekLow": 13.74,
+            "beta": 2.3,
+            "dividendYield": 0.0,
+            "source": "test",
+        }
+        quote = {
+            "symbol": "HIMS",
+            "price": 28.09,
+            "previousClose": 32.74,
+            "change": -4.65,
+            "changePercentage": -14.2,
+            "volume": 28_095_864,
+            "timestamp": 1_785_000_000,
+        }
+
+        with (
+            patch("app.services.research.fetch_single_ticker_ohlcv", return_value=bad_history),
+            patch("app.services.research.fetch_fmp_price_history", return_value=good_history),
+            patch("app.services.research.fetch_ticker_info", return_value=fundamentals),
+            patch("app.services.research.fetch_fmp_quote", return_value=quote),
+        ):
+            payload = compute_research(
+                "HIMS",
+                "Hims & Hers",
+                "Healthcare",
+                start_date=date(2025, 1, 2),
+                end_date=date(2025, 12, 31),
+            )
+
+        self.assertEqual(payload["currentPrice"], 28.09)
+        self.assertEqual(payload["chartLastClose"], 28.09)
+        self.assertEqual(payload["dataQuality"]["priceSource"], "Financial Modeling Prep")
+        self.assertLess(payload["ohlcv"]["close"][-1], 35.0)
+
+    def test_research_suppresses_non_positive_pe_ratios(self) -> None:
+        cleaned = _sanitize_fundamentals({"trailingPE": -561.8, "forwardPE": 21.5})
+        self.assertIsNone(cleaned["trailingPE"])
+        self.assertEqual(cleaned["forwardPE"], 21.5)
 
 
 if __name__ == "__main__":

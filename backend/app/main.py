@@ -157,6 +157,21 @@ def _require_price_coverage(
     return coverage
 
 
+def _research_payload_has_price_mismatch(payload: dict[str, Any]) -> bool:
+    chart_close = payload.get("chartLastClose")
+    if chart_close is None:
+        return False
+    candidates = [payload.get("currentPrice"), payload.get("previousClose")]
+    try:
+        chart = float(chart_close)
+        prices = [float(value) for value in candidates if value is not None and float(value) > 0]
+    except (TypeError, ValueError):
+        return False
+    if chart <= 0 or not prices:
+        return False
+    return min(abs(chart - price) / price for price in prices) > 0.35
+
+
 # ── Background preload on startup ─────────────────────────────────────────
 
 
@@ -633,7 +648,7 @@ async def research(
     cache_key = f"research_{ticker_upper}_{start_date.isoformat()}_{end_date.isoformat()}"
 
     cached = None if refresh else cache_get(RESEARCH_CACHE, cache_key)
-    if cached is not None:
+    if cached is not None and not _research_payload_has_price_mismatch(cached):
         return cached
 
     # Look up constituent for company name / sector
