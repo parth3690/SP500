@@ -5,14 +5,15 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import clsx from "clsx";
 
-import { fetchMovers, fetchCrossovers, fetchOversold, fetchOverbought, fetchDailyOversold, fetchDailyOverbought, apiBaseUrl } from "@/lib/api";
+import { fetchMovers, fetchCrossovers, fetchWeeklyMaWatch, fetchOversold, fetchOverbought, fetchDailyOversold, fetchDailyOverbought, apiBaseUrl } from "@/lib/api";
 import { addDays, toLocalISODate, startOfYear } from "@/lib/date";
 import { formatPct } from "@/lib/format";
 import { getOptionSuggestionShort } from "@/lib/optionSuggestions";
-import type { MoversResponse, MoverRow, CrossoversResponse, OversoldResponse, OverboughtResponse } from "@/lib/types";
+import type { MoversResponse, MoverRow, CrossoversResponse, OversoldResponse, OverboughtResponse, WeeklyMaWatchResponse } from "@/lib/types";
 
 const MoversTable = dynamic(() => import("@/components/MoversTable"), { ssr: false });
 const CrossoverTable = dynamic(() => import("@/components/CrossoverTable"), { ssr: false });
+const WeeklyMaWatchTable = dynamic(() => import("@/components/WeeklyMaWatchTable"), { ssr: false });
 const OversoldTable = dynamic(() => import("@/components/OversoldTable"), { ssr: false });
 const OverboughtTable = dynamic(() => import("@/components/OverboughtTable"), { ssr: false });
 const SectorSummary = dynamic(() => import("@/components/SectorSummary"), { ssr: false });
@@ -45,12 +46,14 @@ export default function Dashboard() {
 
   const [data, setData] = useState<MoversResponse | null>(null);
   const [crossoverData, setCrossoverData] = useState<CrossoversResponse | null>(null);
+  const [weeklyMaData, setWeeklyMaData] = useState<WeeklyMaWatchResponse | null>(null);
   const [oversoldData, setOversoldData] = useState<OversoldResponse | null>(null);
   const [overboughtData, setOverboughtData] = useState<OverboughtResponse | null>(null);
   const [dailyOversoldData, setDailyOversoldData] = useState<OversoldResponse | null>(null);
   const [dailyOverboughtData, setDailyOverboughtData] = useState<OverboughtResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [crossoverLoading, setCrossoverLoading] = useState<boolean>(false);
+  const [weeklyMaLoading, setWeeklyMaLoading] = useState<boolean>(false);
   const [oversoldLoading, setOversoldLoading] = useState<boolean>(false);
   const [overboughtLoading, setOverboughtLoading] = useState<boolean>(false);
   const [dailyOversoldLoading, setDailyOversoldLoading] = useState<boolean>(false);
@@ -106,6 +109,19 @@ export default function Dashboard() {
       console.error("Crossover fetch failed:", getErrorMessage(e));
     } finally {
       setCrossoverLoading(false);
+    }
+  };
+
+  const runWeeklyMaFetch = async (opts?: { refresh?: boolean }) => {
+    setWeeklyMaLoading(true);
+    try {
+      const payload = await fetchWeeklyMaWatch({ length: 200, nearPct: 2, refresh: opts?.refresh === true });
+      setWeeklyMaData(payload);
+    } catch (e) {
+      setWeeklyMaData(null);
+      console.error("Weekly moving-average watch fetch failed:", getErrorMessage(e));
+    } finally {
+      setWeeklyMaLoading(false);
     }
   };
 
@@ -165,6 +181,7 @@ export default function Dashboard() {
   useEffect(() => {
     void runFetch();
     void runCrossoverFetch();
+    void runWeeklyMaFetch();
     void runOversoldFetch();
     void runOverboughtFetch();
     void runDailyOversoldFetch();
@@ -229,6 +246,7 @@ export default function Dashboard() {
   );
 
   const hasAnyRadarCandidates = hasWeeklyLeapsCandidates || hasDailyLeapsCandidates || hasWeeklyOverbought || hasDailyOverbought;
+  const refreshingAny = loading || crossoverLoading || weeklyMaLoading || oversoldLoading || overboughtLoading || dailyOversoldLoading || dailyOverboughtLoading;
 
   return (
     <div className="mx-auto max-w-[1600px] px-4 py-8">
@@ -259,21 +277,22 @@ export default function Dashboard() {
           <button
             className={clsx(
               "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors",
-              loading || crossoverLoading
+              refreshingAny
                 ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 cursor-wait"
                 : "bg-emerald-600 text-white hover:bg-emerald-500"
             )}
-            disabled={loading && crossoverLoading && oversoldLoading && overboughtLoading && dailyOversoldLoading && dailyOverboughtLoading}
+            disabled={refreshingAny}
             onClick={() => {
               void runFetch({ refresh: true });
               void runCrossoverFetch({ refresh: true });
+              void runWeeklyMaFetch({ refresh: true });
               void runOversoldFetch({ refresh: true });
               void runOverboughtFetch({ refresh: true });
               void runDailyOversoldFetch({ refresh: true });
               void runDailyOverboughtFetch({ refresh: true });
             }}
           >
-            {loading || crossoverLoading || oversoldLoading || overboughtLoading || dailyOversoldLoading || dailyOverboughtLoading ? (
+            {refreshingAny ? (
               <>
                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-amber-400/40 border-t-amber-400" />
                 Refreshing...
@@ -729,6 +748,37 @@ export default function Dashboard() {
         </div>
       ) : null}
 
+      {/* ─── 200-Week Moving Average Watch ─── */}
+      <section className="mt-8">
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold tracking-tight text-slate-100">
+            200-Week Moving Average Watch
+          </h2>
+          <p className="text-sm text-slate-400">
+            Compare each stock&apos;s 200-day SMA and 200-week SMA. The list includes names at, below, or within 2% above the weekly level, plus fresh dip and reclaim signals.
+          </p>
+        </div>
+        {weeklyMaData ? (
+          <WeeklyMaWatchTable data={weeklyMaData} />
+        ) : weeklyMaLoading ? (
+          <div className="flex items-center gap-3 rounded-lg border border-cyan-500/30 bg-slate-900/30 px-4 py-6 text-sm text-slate-400">
+            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-700 border-t-cyan-400" />
+            Scanning 200 weeks of price history...
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-cyan-500/30 bg-slate-900/30 px-4 py-6 text-sm text-slate-400">
+            <span>Could not load the 200-week moving-average scan.</span>
+            <button
+              type="button"
+              className="rounded-md bg-cyan-700 px-3 py-2 text-sm font-medium text-white hover:bg-cyan-600"
+              onClick={() => void runWeeklyMaFetch({ refresh: true })}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </section>
+
       {/* ─── Weekly RSI Overbought Section ─── */}
       <section className="mt-8">
         <div className="mb-4">
@@ -924,4 +974,3 @@ export default function Dashboard() {
     </div>
   );
 }
-

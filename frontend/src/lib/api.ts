@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse, AgentBotRunResponse } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, WeeklyMaWatchResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse, AgentBotRunResponse } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -77,6 +77,21 @@ export async function fetchCrossovers(params?: {
 
   const text = await fetchApi(url.toString());
   return parseJson<CrossoversResponse>(text, 200);
+}
+
+export async function fetchWeeklyMaWatch(params?: {
+  length?: number;
+  nearPct?: number;
+  refresh?: boolean;
+}): Promise<WeeklyMaWatchResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/weekly-ma-watch`);
+  if (params?.length != null) url.searchParams.set("length", String(params.length));
+  if (params?.nearPct != null) url.searchParams.set("nearPct", String(params.nearPct));
+  if (params?.refresh === true) url.searchParams.set("refresh", "true");
+
+  const text = await fetchApi(url.toString());
+  return parseJson<WeeklyMaWatchResponse>(text, 200);
 }
 
 export async function fetchOversold(params?: {

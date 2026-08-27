@@ -61,6 +61,169 @@ def _fetch_fmp_rows(endpoint: str, symbol: str) -> list[dict[str, Any]]:
     return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        number = float(value)
+        return number if number == number else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_float(row: dict[str, Any], keys: tuple[str, ...]) -> Optional[float]:
+    for key in keys:
+        value = _safe_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _percent_value(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return value * 100.0 if abs(value) <= 1.0 else value
+
+
+def _latest_row(rows: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not rows:
+        return None
+    return sorted(
+        rows,
+        key=lambda row: str(row.get("date") or row.get("filingDate") or row.get("acceptedDate") or ""),
+        reverse=True,
+    )[0]
+
+
+def _recent_13f_quarters(today: Optional[date] = None, lookback: int = 8) -> list[tuple[int, int]]:
+    current = today or date.today()
+    quarter = (current.month - 1) // 3 + 1
+    year = current.year
+    out: list[tuple[int, int]] = []
+    for _ in range(lookback):
+        out.append((year, quarter))
+        quarter -= 1
+        if quarter == 0:
+            quarter = 4
+            year -= 1
+    return out
+
+
+def parse_fmp_institutional_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract Finviz-like institutional ownership and 13F share-change metrics."""
+    latest = _latest_row(rows)
+    if latest is None:
+        return {
+            "institutionalOwnershipPct": None,
+            "institutionalTransactionPct": None,
+            "institutionalSourceDate": None,
+            "institutionalDataSource": None,
+            "institutionalNotes": ["FMP institutional 13F data was unavailable."],
+        }
+
+    ownership = _percent_value(
+        _first_float(
+            latest,
+            (
+                "ownershipPercent",
+                "institutionalOwnershipPercent",
+                "institutionalOwnershipPercentage",
+                "percentOfSharesOutstanding",
+                "pctOfSharesOutstanding",
+            ),
+        )
+    )
+    transaction = _percent_value(
+        _first_float(
+            latest,
+            (
+                "numberOf13FsharesChangePercent",
+                "sharesChangePct",
+                "sharesChangePercent",
+                "ownershipChangePct",
+                "ownershipPercentChange",
+                "institutionalOwnershipChangePercentage",
+            ),
+        )
+    )
+
+    current_shares = _first_float(latest, ("numberOf13Fshares", "sharesHeld", "totalShares"))
+    previous_shares = _first_float(latest, ("lastNumberOf13Fshares", "previousNumberOf13Fshares"))
+    changed_shares = _first_float(latest, ("numberOf13FsharesChange", "sharesChange", "changeInShares"))
+    if transaction is None and changed_shares is not None and previous_shares and previous_shares > 0:
+        transaction = changed_shares / previous_shares * 100.0
+    if transaction is None and current_shares is not None and previous_shares and previous_shares > 0:
+        transaction = (current_shares / previous_shares - 1.0) * 100.0
+
+    current_holders = _first_float(latest, ("investorsHolding", "holderCount", "holders"))
+    previous_holders = _first_float(latest, ("lastInvestorsHolding", "previousInvestorsHolding"))
+    changed_holders = _first_float(latest, ("investorsHoldingChange", "holderCountChange"))
+    if transaction is None and changed_holders is not None and previous_holders and previous_holders > 0:
+        transaction = changed_holders / previous_holders * 100.0
+    if transaction is None and current_holders is not None and previous_holders and previous_holders > 0:
+        transaction = (current_holders / previous_holders - 1.0) * 100.0
+
+    source_date = latest.get("date") or latest.get("filingDate") or latest.get("acceptedDate") or latest.get("_fmpQuarter")
+    notes: list[str] = []
+    if ownership is not None:
+        notes.append(f"Institutional ownership {ownership:.1f}%.")
+    if transaction is not None:
+        notes.append(f"13F institutional share change {transaction:+.1f}%.")
+    if source_date:
+        notes.append(f"FMP 13F period {source_date}.")
+    if transaction is None:
+        notes.append("Institutional transaction/change field was unavailable.")
+
+    return {
+        "institutionalOwnershipPct": round(ownership, 2) if ownership is not None else None,
+        "institutionalTransactionPct": round(transaction, 2) if transaction is not None else None,
+        "institutionalSourceDate": str(source_date) if source_date else None,
+        "institutionalDataSource": "FMP 13F" if ownership is not None or transaction is not None else None,
+        "institutionalNotes": notes,
+    }
+
+
+def fetch_fmp_institutional_metrics(symbol: str) -> dict[str, Any]:
+    api_key = os.getenv("FMP_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    base = os.getenv("FMP_API_BASE", "https://financialmodelingprep.com/stable").rstrip("/")
+    for year, quarter in _recent_13f_quarters():
+        params = {
+            "symbol": fmp_symbol(symbol),
+            "year": year,
+            "quarter": quarter,
+            "apikey": api_key,
+        }
+        try:
+            response = httpx.get(
+                f"{base}/institutional-ownership/symbol-positions-summary",
+                params=params,
+                timeout=15.0,
+            )
+            if response.status_code in (401, 402, 403):
+                return {}
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            continue
+
+        rows: list[dict[str, Any]]
+        if isinstance(payload, list):
+            rows = [row for row in payload if isinstance(row, dict)]
+        elif isinstance(payload, dict):
+            nested = payload.get("data") or payload.get("results")
+            rows = [row for row in nested if isinstance(row, dict)] if isinstance(nested, list) else [payload]
+        else:
+            rows = []
+        if rows:
+            for row in rows:
+                row.setdefault("_fmpQuarter", f"{year}Q{quarter}")
+            return parse_fmp_institutional_metrics(rows)
+    return {}
+
+
 def fetch_fmp_research_fundamentals(symbol: str) -> dict[str, Any]:
     """Fetch compact research fundamentals without relying on Yahoo metadata."""
     endpoints = ("profile", "ratios-ttm", "analyst-estimates")

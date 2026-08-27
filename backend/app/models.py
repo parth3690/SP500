@@ -102,6 +102,29 @@ class OverboughtResponse(BaseModel):
     meta: dict[str, Any]
 
 
+class WeeklyMaWatchRow(BaseModel):
+    ticker: str
+    companyName: str
+    sector: str
+    currentPrice: float
+    priceDate: date
+    dailySma: float = Field(..., description="Current 200-day simple moving average")
+    dailyDistancePct: float = Field(..., description="Price distance from the daily moving average")
+    weeklySma: float = Field(..., description="Current moving average of weekly closes")
+    distancePct: float = Field(..., description="Price distance from the weekly moving average")
+    signal: str = Field(..., description="'crossed_below' | 'below' | 'near' | 'reclaimed'")
+    weeklyObservations: int
+
+
+class WeeklyMaWatchResponse(BaseModel):
+    asOf: datetime
+    maLength: int
+    maType: str
+    nearPct: float
+    stocks: list[WeeklyMaWatchRow]
+    meta: dict[str, Any]
+
+
 class MultibaggerCriterion(BaseModel):
     id: str
     name: str
@@ -192,6 +215,11 @@ class AlphaTradePlan(BaseModel):
     optionStrike: Optional[float] = None
     optionExpiry: Optional[str] = None
     optionRationale: Optional[str] = None
+    optionCategory: Optional[str] = None
+    optionDte: Optional[int] = None
+    optionIvProxy: Optional[float] = None
+    optionIvGate: Optional[str] = None
+    optionRules: list[str] = Field(default_factory=list)
     rationale: str
 
 
@@ -220,6 +248,12 @@ class AlphaCandidateRow(BaseModel):
     catalystScore: float
     revisionScore: float
     catalystNotes: list[str]
+    institutionalOwnershipPct: Optional[float] = None
+    institutionalTransactionPct: Optional[float] = None
+    institutionalScannerPass: bool = False
+    institutionalSourceDate: Optional[str] = None
+    institutionalDataSource: Optional[str] = None
+    institutionalNotes: list[str] = Field(default_factory=list)
     tradePlan: AlphaTradePlan
     signals: list[AlphaSignal]
     backtests: list[AlphaBacktestMetric]
@@ -302,6 +336,11 @@ class AgentBotRecommendation(BaseModel):
     optionStrike: Optional[float] = None
     optionExpiry: Optional[str] = None
     optionRationale: Optional[str] = None
+    optionCategory: Optional[str] = None
+    optionDte: Optional[int] = None
+    optionIvProxy: Optional[float] = None
+    optionIvGate: Optional[str] = None
+    optionRules: list[str] = Field(default_factory=list)
     rationale: str
     whyNow: str
     signals: list[AlphaSignal]

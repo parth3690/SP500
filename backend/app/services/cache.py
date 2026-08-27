@@ -19,6 +19,7 @@ RESEARCH_CACHE: TTLCache = TTLCache(maxsize=32, ttl=RESEARCH_TTL_SECONDS)
 
 RSI_SCAN_TTL_SECONDS = int(os.getenv("RSI_SCAN_TTL_SECONDS", "900"))
 RSI_SCAN_CACHE: TTLCache = TTLCache(maxsize=8, ttl=RSI_SCAN_TTL_SECONDS)
+WEEKLY_MA_SCAN_CACHE: TTLCache = TTLCache(maxsize=4, ttl=RSI_SCAN_TTL_SECONDS)
 
 # Fast-mover scan cache (FMP-based)
 MOVE_FINDER_TTL_SECONDS = int(os.getenv("MOVE_FINDER_TTL_SECONDS", "120"))
@@ -54,6 +55,30 @@ def cache_set(cache: TTLCache, key: Hashable, value: Any) -> None:
         cache[key] = value
 
 
+def price_cache_get(start_iso: str, end_iso: str) -> Optional[Any]:
+    """Return an exact or wider cached price frame covering the requested range."""
+    exact_key = ("prices", start_iso, end_iso)
+    with _LOCK:
+        exact = PRICE_DATA_CACHE.get(exact_key)
+        if exact is not None:
+            return exact
+        for key, value in PRICE_DATA_CACHE.items():
+            if (
+                isinstance(key, tuple)
+                and len(key) == 3
+                and key[0] == "prices"
+                and key[1] <= start_iso
+                and key[2] >= end_iso
+            ):
+                return value
+    return None
+
+
+def price_cache_set(start_iso: str, end_iso: str, value: Any) -> None:
+    with _LOCK:
+        PRICE_DATA_CACHE[("prices", start_iso, end_iso)] = value
+
+
 def clear_research_and_price_caches() -> None:
     """Drop cached OHLCV/research responses and shared Yahoo price batches (stale quotes)."""
     with _LOCK:
@@ -69,6 +94,7 @@ def clear_all_caches() -> None:
         MOVERS_CACHE.clear()
         CROSSOVERS_CACHE.clear()
         RSI_SCAN_CACHE.clear()
+        WEEKLY_MA_SCAN_CACHE.clear()
         MOVE_FINDER_CACHE.clear()
         ALPHA_CACHE.clear()
         VALUATION_CACHE.clear()

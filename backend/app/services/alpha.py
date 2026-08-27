@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from ..models import Constituent
+from .fmp import fetch_fmp_institutional_metrics
 from .sp500 import normalize_yahoo_ticker
 
 
@@ -36,6 +37,10 @@ ALPHA_SIGNAL_IDS = [
     "catalyst",
     "revision_proxy",
 ]
+
+ALPHA_CACHE_VERSION = "alpha-inst-v1"
+INSTITUTIONAL_OWNERSHIP_MIN = 20.0
+INSTITUTIONAL_TRANSACTION_MIN = 10.0
 
 
 def alpha_universe_tickers(constituents: Iterable[Constituent]) -> list[str]:
@@ -392,18 +397,159 @@ def catalyst_scores_from_info(info: dict[str, Any], current_price: float) -> dic
     }
 
 
+def _yahoo_fraction_to_pct(value: Any) -> Optional[float]:
+    number = _safe_float(value)
+    if number is None:
+        return None
+    return number * 100.0
+
+
+def _institutional_defaults(notes: Optional[list[str]] = None) -> dict[str, Any]:
+    return {
+        "institutionalOwnershipPct": None,
+        "institutionalTransactionPct": None,
+        "institutionalScannerPass": False,
+        "institutionalSourceDate": None,
+        "institutionalDataSource": None,
+        "institutionalNotes": notes or ["Institutional data not enriched for this row."],
+    }
+
+
+def institutional_metrics_from_info(info: dict[str, Any]) -> dict[str, Any]:
+    ownership = _yahoo_fraction_to_pct(info.get("heldPercentInstitutions"))
+    notes: list[str] = []
+    if ownership is not None:
+        notes.append(f"Institutional ownership {ownership:.1f}% from Yahoo fundamentals.")
+    else:
+        notes.append("Institutional ownership was unavailable from Yahoo fundamentals.")
+    notes.append("Institutional transaction/change field was unavailable from summary fundamentals.")
+
+    return {
+        **_institutional_defaults(notes),
+        "institutionalOwnershipPct": round(ownership, 2) if ownership is not None else None,
+        "institutionalDataSource": "Yahoo fundamentals" if ownership is not None else None,
+    }
+
+
+def institutional_metrics_from_holder_table(holders: Any) -> dict[str, Any]:
+    if holders is None or getattr(holders, "empty", True):
+        return _institutional_defaults(["Yahoo institutional holder table was unavailable."])
+
+    total_previous = 0.0
+    total_change = 0.0
+    dated: list[str] = []
+    rows_used = 0
+    try:
+        iterator = holders.iterrows()
+    except AttributeError:
+        return _institutional_defaults(["Yahoo institutional holder table had an unexpected shape."])
+
+    for _, holder in iterator:
+        shares = _safe_float(holder.get("Shares"))
+        pct_change = _safe_float(holder.get("pctChange"))
+        if shares is None or shares <= 0 or pct_change is None:
+            continue
+        if abs(pct_change) > 5.0:
+            pct_change = pct_change / 100.0
+        if pct_change <= -0.99:
+            continue
+        previous = shares / (1.0 + pct_change)
+        total_previous += previous
+        total_change += shares - previous
+        rows_used += 1
+        reported = holder.get("Date Reported")
+        if reported is not None:
+            dated.append(str(reported))
+
+    transaction = (total_change / total_previous * 100.0) if total_previous > 0 else None
+    source_date = max(dated) if dated else None
+    notes = [
+        f"Top institutional holder weighted share change {transaction:+.1f}%."
+        if transaction is not None
+        else "Institutional holder share-change field was unavailable.",
+    ]
+    if source_date:
+        notes.append(f"Yahoo holder table date {source_date}.")
+    if rows_used:
+        notes.append(f"Computed from {rows_used} holder row(s) with pctChange.")
+
+    return {
+        **_institutional_defaults(notes),
+        "institutionalTransactionPct": round(transaction, 2) if transaction is not None else None,
+        "institutionalSourceDate": source_date,
+        "institutionalDataSource": "Yahoo institutional holders" if transaction is not None else None,
+    }
+
+
+def _combine_institutional_metrics(yahoo_metrics: dict[str, Any], fmp_metrics: dict[str, Any]) -> dict[str, Any]:
+    ownership = fmp_metrics.get("institutionalOwnershipPct")
+    if ownership is None:
+        ownership = yahoo_metrics.get("institutionalOwnershipPct")
+    transaction = fmp_metrics.get("institutionalTransactionPct")
+    if transaction is None:
+        transaction = yahoo_metrics.get("institutionalTransactionPct")
+
+    notes = [
+        *[str(note) for note in yahoo_metrics.get("institutionalNotes", []) if note],
+        *[str(note) for note in fmp_metrics.get("institutionalNotes", []) if note],
+    ]
+    source = fmp_metrics.get("institutionalDataSource") or yahoo_metrics.get("institutionalDataSource")
+    source_date = fmp_metrics.get("institutionalSourceDate") or yahoo_metrics.get("institutionalSourceDate")
+    scanner_pass = (
+        ownership is not None
+        and transaction is not None
+        and float(ownership) >= INSTITUTIONAL_OWNERSHIP_MIN
+        and float(transaction) >= INSTITUTIONAL_TRANSACTION_MIN
+    )
+    if scanner_pass:
+        notes.append(
+            f"Pass: institutions own {float(ownership):.1f}% and added {float(transaction):+.1f}%."
+        )
+    elif ownership is not None or transaction is not None:
+        notes.append(
+            f"Needs ownership >= {INSTITUTIONAL_OWNERSHIP_MIN:.0f}% and transaction >= +{INSTITUTIONAL_TRANSACTION_MIN:.0f}%."
+        )
+
+    return {
+        "institutionalOwnershipPct": round(float(ownership), 2) if ownership is not None else None,
+        "institutionalTransactionPct": round(float(transaction), 2) if transaction is not None else None,
+        "institutionalScannerPass": scanner_pass,
+        "institutionalSourceDate": str(source_date) if source_date else None,
+        "institutionalDataSource": source,
+        "institutionalNotes": notes[:5] or ["Institutional ownership/transaction data unavailable."],
+    }
+
+
 def _enrich_ticker(symbol: str, current_price: float) -> dict[str, Any]:
+    info: dict[str, Any] = {}
+    holder_metrics: dict[str, Any] = {}
     try:
         import yfinance as yf
 
-        info = yf.Ticker(normalize_yahoo_ticker(symbol)).info or {}
+        stock = yf.Ticker(normalize_yahoo_ticker(symbol))
+        info = stock.info or {}
+        try:
+            holder_metrics = institutional_metrics_from_holder_table(stock.institutional_holders)
+        except Exception:
+            holder_metrics = _institutional_defaults(["Yahoo institutional holder table was unavailable."])
     except Exception:
-        return {
+        data = {
             "catalystScore": 0.0,
             "revisionScore": 0.0,
             "catalystNotes": ["No lightweight catalyst data available."],
         }
-    return catalyst_scores_from_info(info, current_price)
+    else:
+        data = catalyst_scores_from_info(info, current_price)
+
+    yahoo_institutional = _combine_institutional_metrics(
+        institutional_metrics_from_info(info),
+        holder_metrics,
+    )
+    institutional = _combine_institutional_metrics(
+        yahoo_institutional,
+        fetch_fmp_institutional_metrics(symbol),
+    )
+    return {**data, **institutional}
 
 
 def apply_alpha_enrichment(row: dict[str, Any], data: dict[str, Any]) -> None:
@@ -520,6 +666,11 @@ def _next_monthly_expiry(days_out: int = 45, *, as_of: Optional[date] = None) ->
     return expiry.isoformat()
 
 
+PREMIUM_SELL_IV_MIN = 50.0
+PREMIUM_SELL_DTE = 30
+DIRECTIONAL_OPTION_DTE = 45
+
+
 def _round_strike(price: float) -> float:
     if price >= 500:
         step = 10.0
@@ -539,6 +690,8 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
     expected = float(row["expectedReturn20d"])
     rs_spy = float(row["rsVsSpy20d"])
     vol = max(float(row["volatility20d"]), 12.0)
+    iv_proxy = round(max(float(row.get("volatility20d", 0.0)), 0.0), 1)
+    premium_iv_ok = iv_proxy >= PREMIUM_SELL_IV_MIN
     beta = float(row["betaVsSpy"])
     stop_pct = _clamp(vol / 7.0, 4.0, 14.0)
     target1_pct = _clamp(max(expected, 3.0) + vol / 10.0, 5.0, 18.0)
@@ -552,8 +705,8 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
         target1 = price * (1.0 + target1_pct / 100.0)
         target2 = price * (1.0 + target2_pct / 100.0)
         option_direction = "bullish"
-        option_strategy = "Call debit spread" if price >= 150 else "Long call"
-        option_strike = _round_strike(price * 1.03)
+        option_strategy = "Bull put credit spread" if premium_iv_ok else ("Call debit spread" if price >= 150 else "Long call")
+        option_strike = _round_strike(price * (0.95 if premium_iv_ok else 1.03))
         rationale = (
             f"BUY: alpha score {score:.1f}, positive 20d expected return, "
             f"and relative strength vs SPY is {rs_spy:.1f}%."
@@ -566,8 +719,8 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
         target1 = price * (1.0 - target1_pct / 100.0)
         target2 = price * (1.0 - target2_pct / 100.0)
         option_direction = "bearish"
-        option_strategy = "Put debit spread" if price >= 100 else "Long put"
-        option_strike = _round_strike(price * 0.97)
+        option_strategy = "Bear call credit spread" if premium_iv_ok else ("Put debit spread" if price >= 100 else "Long put")
+        option_strike = _round_strike(price * (1.05 if premium_iv_ok else 0.97))
         rationale = (
             f"SELL/SHORT: alpha score {score:.1f}, negative expected return, "
             f"and relative strength vs SPY is {rs_spy:.1f}%."
@@ -594,8 +747,12 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
         target1 = price * (1.0 + target1_pct / 100.0) if expected >= 0 else None
         target2 = price * (1.0 + target2_pct / 100.0) if expected >= 0 else None
         option_direction = "bullish" if expected > 0 else None
-        option_strategy = "Call debit spread" if expected > 0 and price >= 150 else ("Long call" if expected > 0 else None)
-        option_strike = _round_strike(price * 1.03) if expected > 0 else None
+        if expected > 0 and premium_iv_ok:
+            option_strategy = "Bull put credit spread"
+            option_strike = _round_strike(price * 0.95)
+        else:
+            option_strategy = "Call debit spread" if expected > 0 and price >= 150 else ("Long call" if expected > 0 else None)
+            option_strike = _round_strike(price * 1.03) if expected > 0 else None
         rationale = (
             f"WATCH: alpha score {score:.1f} is not strong enough for a fresh trade. "
             "Wait for score improvement or cleaner relative strength."
@@ -609,12 +766,40 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
             risk_reward = reward / risk
 
     option_rationale = None
-    option_expiry = _next_monthly_expiry() if option_strategy else None
+    option_category = None
+    option_dte = None
+    option_iv_gate = None
+    option_rules: list[str] = []
+    option_expiry = None
     if option_strategy and option_strike:
-        option_rationale = (
-            f"Use {option_strategy.lower()} around {option_strike:.2f} strike expiring {option_expiry} "
-            "when stock capital, share price, or defined-risk sizing makes common stock less practical."
-        )
+        is_premium_sell = "credit spread" in option_strategy.lower() or "cash-secured put" in option_strategy.lower()
+        option_category = "Premium 30D" if is_premium_sell else "Directional"
+        option_dte = PREMIUM_SELL_DTE if is_premium_sell else DIRECTIONAL_OPTION_DTE
+        option_expiry = _next_monthly_expiry(option_dte)
+        option_iv_gate = "pass" if premium_iv_ok else "below_50"
+        option_rules = [
+            "Use about 30 DTE for short-premium theta edge.",
+            "Only sell option premium when IV or IV proxy is 50+.",
+        ]
+        if is_premium_sell:
+            option_rationale = (
+                f"IV proxy {iv_proxy:.1f} is >= {PREMIUM_SELL_IV_MIN:.0f}, so this qualifies for a "
+                f"30 DTE premium-selling setup. Use {option_strategy.lower()} around {option_strike:.2f} "
+                f"strike expiring {option_expiry}; manage assignment/spread risk before entry."
+            )
+        else:
+            option_rationale = (
+                f"IV proxy {iv_proxy:.1f} is below the {PREMIUM_SELL_IV_MIN:.0f}+ premium-selling gate, "
+                f"so avoid naked/short-premium income trades. Use {option_strategy.lower()} around "
+                f"{option_strike:.2f} strike expiring {option_expiry} when stock capital, share price, "
+                "or defined-risk sizing makes common stock less practical."
+            )
+    elif iv_proxy > 0:
+        option_iv_gate = "pass" if premium_iv_ok else "below_50"
+        option_rules = [
+            "Use about 30 DTE for short-premium theta edge.",
+            "Only sell option premium when IV or IV proxy is 50+.",
+        ]
 
     confidence_basis = score
     if action == "SELL":
@@ -647,6 +832,11 @@ def _trade_plan(row: dict[str, Any]) -> dict[str, Any]:
         "optionStrike": option_strike,
         "optionExpiry": option_expiry,
         "optionRationale": option_rationale,
+        "optionCategory": option_category,
+        "optionDte": option_dte,
+        "optionIvProxy": iv_proxy if iv_proxy > 0 else None,
+        "optionIvGate": option_iv_gate,
+        "optionRules": option_rules,
         "rationale": rationale,
     }
 
@@ -781,6 +971,7 @@ def compute_alpha_candidates(
             "catalystScore": 0.0,
             "revisionScore": 0.0,
             "catalystNotes": ["Catalyst enrichment is applied only to top names."],
+            **_institutional_defaults(),
             "tradePlan": {},
             "signals": [],
             "backtests": [],
@@ -849,6 +1040,7 @@ def compute_alpha_candidates(
             "warnings": [
                 "Catalyst and revision fields are lightweight proxies, enriched only for top-ranked names.",
                 "Catalyst and revision signals are not historically backtested without point-in-time fundamentals.",
+                "Institutional scanner uses Yahoo holder-table change or FMP 13F data when available, enriched only for top-ranked names.",
             ],
         },
     }

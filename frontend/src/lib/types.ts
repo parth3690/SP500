@@ -114,6 +114,43 @@ export type OverboughtResponse = {
   };
 };
 
+export type WeeklyMaWatchSignal = "crossed_below" | "below" | "near" | "reclaimed";
+
+export type WeeklyMaWatchRow = {
+  ticker: string;
+  companyName: string;
+  sector: string;
+  currentPrice: number;
+  priceDate: string;
+  dailySma: number;
+  dailyDistancePct: number;
+  weeklySma: number;
+  distancePct: number;
+  signal: WeeklyMaWatchSignal;
+  weeklyObservations: number;
+};
+
+export type WeeklyMaWatchResponse = {
+  asOf: string;
+  maLength: number;
+  maType: "SMA";
+  nearPct: number;
+  stocks: WeeklyMaWatchRow[];
+  meta: {
+    total: number;
+    computed: number;
+    skipped: number;
+    candidateCount: number;
+    crossedBelowCount: number;
+    belowCount: number;
+    nearCount: number;
+    reclaimedCount: number;
+    maLength: number;
+    nearPct: number;
+    computedAt: string;
+  };
+};
+
 /** Present when backend merged a Financial Modeling Prep live quote (see FMP_API_KEY). */
 export type LiveQuoteMeta = {
   source: string;
@@ -302,6 +339,11 @@ export type AlphaTradePlan = {
   optionStrike: number | null;
   optionExpiry: string | null;
   optionRationale: string | null;
+  optionCategory: string | null;
+  optionDte: number | null;
+  optionIvProxy: number | null;
+  optionIvGate: string | null;
+  optionRules: string[];
   rationale: string;
 };
 
@@ -330,6 +372,12 @@ export type AlphaCandidateRow = {
   catalystScore: number;
   revisionScore: number;
   catalystNotes: string[];
+  institutionalOwnershipPct: number | null;
+  institutionalTransactionPct: number | null;
+  institutionalScannerPass: boolean;
+  institutionalSourceDate: string | null;
+  institutionalDataSource: string | null;
+  institutionalNotes: string[];
   tradePlan: AlphaTradePlan;
   signals: AlphaSignal[];
   backtests: AlphaBacktestMetric[];
@@ -402,6 +450,11 @@ export type AgentBotRecommendation = {
   optionStrike: number | null;
   optionExpiry: string | null;
   optionRationale: string | null;
+  optionCategory: string | null;
+  optionDte: number | null;
+  optionIvProxy: number | null;
+  optionIvGate: string | null;
+  optionRules: string[];
   rationale: string;
   whyNow: string;
   signals: AlphaSignal[];

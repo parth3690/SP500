@@ -104,6 +104,7 @@ export default function ResearchPage() {
     const validClose = data.ohlcv.close.filter((c): c is number => c != null);
     return getVolatilityAndPathSignals(validClose, data.currentPrice);
   }, [data]);
+  const optionIvProxy = useMemo(() => getIvProxyFromCloses(data?.ohlcv?.close ?? []), [data]);
 
   // ── Data fetcher ────────────────────────────────────────────────────────
   const loadData = useCallback(
@@ -793,14 +794,20 @@ export default function ResearchPage() {
             : rsi != null && rsi >= 65
               ? "daily_overbought"
               : null;
-        const rsiSuggestion = context ? getOptionSuggestion(context, rsi!, data.currentPrice) : null;
-        const factorInputs = getFactorInputs(data, volatilitySignals);
+        const rsiSuggestion = context ? getOptionSuggestion(context, rsi!, data.currentPrice, optionIvProxy) : null;
+        const factorInputs = getFactorInputs(data, volatilitySignals, optionIvProxy);
         const factorSuggestion = rsiSuggestion ? null : getFactorBasedSuggestion(factorInputs);
         const suggestion = rsiSuggestion ?? factorSuggestion;
         if (!suggestion) return null;
         const isRsiBased = !!rsiSuggestion;
         const isOversold = isRsiBased && context === "daily_oversold";
         const factorsUsed = "factorsUsed" in suggestion ? (suggestion as { factorsUsed: string[] }).factorsUsed : null;
+        const ivGateLabel =
+          suggestion.ivGate === "pass"
+            ? "IV gate 50+"
+            : suggestion.ivGate === "below_50"
+              ? "IV gate below 50"
+              : "IV gate N/A";
         return (
           <div
             className={clsx(
@@ -820,6 +827,31 @@ export default function ResearchPage() {
                 ? `Strike and expiry ideas where probability of profit is higher, based on current RSI (${rsi != null ? fmt(rsi) : "N/A"}).`
                 : "No RSI signal; suggestion from crossover, GBM, Monte Carlo, 52w range. Use backtest key to filter in backtests."}
             </p>
+            <div className="mb-3 flex flex-wrap gap-1.5 text-[11px]">
+              <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-slate-300">
+                Search: {suggestion.optionCategory ?? "Options"}
+              </span>
+              {suggestion.dte != null ? (
+                <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-slate-300">
+                  {suggestion.dte} DTE
+                </span>
+              ) : null}
+              <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-slate-300">
+                IV proxy {suggestion.ivProxy == null ? "N/A" : `${fmt(suggestion.ivProxy, 1)}%`}
+              </span>
+              <span
+                className={clsx(
+                  "rounded border bg-slate-950/60 px-2 py-1",
+                  suggestion.ivGate === "pass"
+                    ? "border-emerald-500/40 text-emerald-300"
+                    : suggestion.ivGate === "below_50"
+                      ? "border-amber-500/40 text-amber-300"
+                      : "border-slate-700 text-slate-400",
+                )}
+              >
+                {ivGateLabel}
+              </span>
+            </div>
             <div className="grid gap-2 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] uppercase tracking-wider text-slate-500">Strategy</span>
@@ -852,6 +884,18 @@ export default function ResearchPage() {
                   </p>
                 </div>
               )}
+              {suggestion.rules?.length ? (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Option search rules</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {suggestion.rules.map((rule) => (
+                      <span key={rule} className="rounded border border-slate-700 bg-slate-950/50 px-2 py-1 text-[11px] text-slate-300">
+                        {rule}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         );
@@ -860,12 +904,18 @@ export default function ResearchPage() {
       {/* ── LEAPS suggestion (always shown; RSI or factor-based; "No suggestions" only when neither) ── */}
       {(() => {
         const rsiLeaps = getLeapsSuggestion(latestRsi ?? null, data.currentPrice);
-        const factorInputs = getFactorInputs(data, volatilitySignals);
+        const factorInputs = getFactorInputs(data, volatilitySignals, optionIvProxy);
         const factorLeaps = rsiLeaps ? null : getFactorBasedLeapsSuggestion(factorInputs);
         const leaps = rsiLeaps ?? factorLeaps;
         const isRsiBased = !!rsiLeaps;
         const isOversold = isRsiBased && (latestRsi ?? 50) <= 35;
         const factorsUsed = leaps && "factorsUsed" in leaps ? (leaps as { factorsUsed: string[] }).factorsUsed : null;
+        const ivGateLabel =
+          leaps?.ivGate === "pass"
+            ? "IV gate 50+"
+            : leaps?.ivGate === "below_50"
+              ? "IV gate below 50"
+              : "IV gate N/A";
         return (
           <div
             className={clsx(
@@ -885,6 +935,17 @@ export default function ResearchPage() {
             </p>
             {leaps ? (
               <div className="grid gap-2 text-sm">
+                <div className="flex flex-wrap gap-1.5 text-[11px]">
+                  <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-slate-300">
+                    Search: {leaps.optionCategory ?? "LEAPS"}
+                  </span>
+                  <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-slate-300">
+                    IV proxy {leaps.ivProxy == null ? "N/A" : `${fmt(leaps.ivProxy, 1)}%`}
+                  </span>
+                  <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-slate-400">
+                    {ivGateLabel}
+                  </span>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[10px] uppercase tracking-wider text-slate-500">Strategy</span>
                   <span
@@ -914,6 +975,18 @@ export default function ResearchPage() {
                     <p className="text-xs text-cyan-300/90 font-mono">{factorsUsed.join(" · ")}</p>
                   </div>
                 )}
+                {leaps.rules?.length ? (
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Option search rules</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {leaps.rules.map((rule) => (
+                        <span key={rule} className="rounded border border-slate-700 bg-slate-950/50 px-2 py-1 text-[11px] text-slate-300">
+                          {rule}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="text-sm text-slate-500 italic">
@@ -1218,14 +1291,33 @@ const SCREENING_ROWS: { id: string; formula: string; question: string; green: st
 
 type ScreeningResult = "green" | "red" | "review";
 
+function getIvProxyFromCloses(values: (number | null)[]): number | null {
+  const validClose = values.filter((value): value is number => value != null && value > 0);
+  if (validClose.length < 22) return null;
+
+  const recent = validClose.slice(-22);
+  const returns: number[] = [];
+  for (let i = 1; i < recent.length; i += 1) {
+    returns.push(Math.log(recent[i] / recent[i - 1]));
+  }
+  if (returns.length === 0) return null;
+
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / returns.length;
+  const annualizedVolPct = Math.sqrt(Math.max(0, variance) * 252) * 100;
+  return Number.isFinite(annualizedVolPct) ? Math.round(annualizedVolPct * 10) / 10 : null;
+}
+
 /** Build factor inputs from research data; uses precomputed volatility signals when provided (avoids duplicate GBM/MC). */
 function getFactorInputs(
   data: ResearchData,
-  volatilitySignals?: VolatilityPathSignals | null
+  volatilitySignals?: VolatilityPathSignals | null,
+  ivProxy?: number | null
 ): FactorInputs {
   const close = data.ohlcv?.close ?? [];
   const validClose = close.filter((c): c is number => c != null);
   const signals = volatilitySignals ?? getVolatilityAndPathSignals(validClose, data.currentPrice);
+  const derivedIvProxy = ivProxy ?? getIvProxyFromCloses(close);
 
   const lo = data.fundamentals?.fiftyTwoWeekLow;
   const hi = data.fundamentals?.fiftyTwoWeekHigh;
@@ -1243,6 +1335,7 @@ function getFactorInputs(
     mcBearish: signals?.mcBearish ?? false,
     fiftyTwoWeekPct,
     beta: data.fundamentals?.beta ?? null,
+    ivProxy: derivedIvProxy,
   };
 }
 

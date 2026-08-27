@@ -17,11 +17,21 @@ from app.services.agent_bot import (
     _generate_alerts,
     run_agent_bot,
 )
-from app.services.alpha import _next_monthly_expiry, _score_core, _trade_plan
+from app.services.alpha import (
+    _combine_institutional_metrics,
+    _next_monthly_expiry,
+    _score_core,
+    _trade_plan,
+    institutional_metrics_from_holder_table,
+    institutional_metrics_from_info,
+)
 from app.services.crossovers import compute_crossovers
+from app.services.cache import PRICE_DATA_CACHE, price_cache_get, price_cache_set
+from app.services.fmp import parse_fmp_institutional_metrics
 from app.services.market_conditions import _download_close, _risk_assessment
 from app.services.prices import fetch_close_prices, fetch_fmp_price_history
 from app.services.research import _sanitize_fundamentals, compute_research
+from app.services.weekly_ma_scan import compute_weekly_ma_watch
 
 
 class AgentContractTests(unittest.TestCase):
@@ -133,6 +143,79 @@ class TradeDirectionTests(unittest.TestCase):
         self.assertGreater(plan["confidence"], 65.0)
         self.assertGreater(plan["stop"], plan["entry"])
         self.assertLess(plan["target1"], plan["entry"])
+
+    def test_high_iv_bullish_plan_uses_30d_premium_setup(self) -> None:
+        row = {
+            "currentPrice": 100.0,
+            "alphaScore": 75.0,
+            "riskScore": 70.0,
+            "expectedReturn20d": 6.0,
+            "rsVsSpy20d": 5.0,
+            "volatility20d": 55.0,
+            "betaVsSpy": 1.0,
+        }
+        plan = _trade_plan(row)
+        self.assertEqual(plan["action"], "BUY")
+        self.assertEqual(plan["optionStrategy"], "Bull put credit spread")
+        self.assertEqual(plan["optionCategory"], "Premium 30D")
+        self.assertEqual(plan["optionDte"], 30)
+        self.assertEqual(plan["optionIvGate"], "pass")
+        self.assertEqual(plan["optionIvProxy"], 55.0)
+        self.assertIn("Only sell option premium when IV or IV proxy is 50+.", plan["optionRules"])
+
+    def test_low_iv_bullish_plan_avoids_short_premium(self) -> None:
+        row = {
+            "currentPrice": 100.0,
+            "alphaScore": 75.0,
+            "riskScore": 70.0,
+            "expectedReturn20d": 6.0,
+            "rsVsSpy20d": 5.0,
+            "volatility20d": 25.0,
+            "betaVsSpy": 1.0,
+        }
+        plan = _trade_plan(row)
+        self.assertEqual(plan["action"], "BUY")
+        self.assertEqual(plan["optionStrategy"], "Long call")
+        self.assertEqual(plan["optionCategory"], "Directional")
+        self.assertEqual(plan["optionDte"], 45)
+        self.assertEqual(plan["optionIvGate"], "below_50")
+        self.assertNotEqual(plan["optionCategory"], "Premium 30D")
+
+    def test_fmp_institutional_parser_uses_13f_share_change(self) -> None:
+        metrics = parse_fmp_institutional_metrics([
+            {
+                "date": "2026-03-31",
+                "ownershipPercent": 24.5,
+                "numberOf13Fshares": 1_120_000,
+                "lastNumberOf13Fshares": 1_000_000,
+            }
+        ])
+        self.assertEqual(metrics["institutionalOwnershipPct"], 24.5)
+        self.assertEqual(metrics["institutionalTransactionPct"], 12.0)
+        self.assertEqual(metrics["institutionalDataSource"], "FMP 13F")
+
+    def test_yahoo_institutional_ownership_fraction_scales_to_percent(self) -> None:
+        metrics = institutional_metrics_from_info({"heldPercentInstitutions": 0.79285})
+        self.assertEqual(metrics["institutionalOwnershipPct"], 79.29)
+
+    def test_yahoo_holder_table_uses_weighted_pct_change(self) -> None:
+        holders = pd.DataFrame(
+            [
+                {"Date Reported": "2026-03-31", "Shares": 110.0, "pctChange": 0.10},
+                {"Date Reported": "2026-03-31", "Shares": 60.0, "pctChange": 0.20},
+            ]
+        )
+        metrics = institutional_metrics_from_holder_table(holders)
+        self.assertEqual(metrics["institutionalTransactionPct"], 13.33)
+        self.assertEqual(metrics["institutionalDataSource"], "Yahoo institutional holders")
+
+    def test_institutional_merge_keeps_yahoo_change_when_fmp_missing(self) -> None:
+        merged = _combine_institutional_metrics(
+            {"institutionalOwnershipPct": 79.0, "institutionalTransactionPct": 13.2, "institutionalNotes": []},
+            {},
+        )
+        self.assertEqual(merged["institutionalTransactionPct"], 13.2)
+        self.assertTrue(merged["institutionalScannerPass"])
 
     def test_monthly_option_expiry_is_third_friday(self) -> None:
         self.assertEqual(
@@ -248,6 +331,61 @@ class DataIntegrityTests(unittest.TestCase):
         _, meta = compute_crossovers(constituents, prices, threshold_pct=10.0)
         self.assertEqual(meta["computed"], 1)
         self.assertEqual(meta["skipped"], 1)
+
+    def test_weekly_ma_watch_matches_dip_near_and_reclaim_rules(self) -> None:
+        index = pd.date_range("2022-01-07", periods=202, freq="W-FRI")
+        prices = pd.DataFrame(
+            {
+                "CROSS": [100.0] * 201 + [90.0],
+                "BELOW": [100.0] * 200 + [90.0, 89.0],
+                "NEAR": [100.0] * 200 + [101.0, 101.0],
+                "BACK": [100.0] * 200 + [90.0, 101.0],
+                "FAR": [100.0] * 200 + [110.0, 110.0],
+            },
+            index=index,
+        )
+        constituents = [
+            Constituent(ticker=ticker, yahooTicker=ticker, companyName=ticker, sector="Test")
+            for ticker in prices.columns
+        ]
+
+        rows, meta = compute_weekly_ma_watch(constituents, prices, ma_length=200, near_pct=2.0)
+        signals = {row["ticker"]: row["signal"] for row in rows}
+
+        self.assertEqual(signals["CROSS"], "crossed_below")
+        self.assertEqual(signals["BELOW"], "below")
+        self.assertEqual(signals["NEAR"], "near")
+        self.assertEqual(signals["BACK"], "reclaimed")
+        self.assertNotIn("FAR", signals)
+        cross_row = next(row for row in rows if row["ticker"] == "CROSS")
+        self.assertEqual(cross_row["dailySma"], 99.95)
+        self.assertEqual(cross_row["dailyDistancePct"], -9.95)
+        self.assertEqual(meta["computed"], 5)
+        self.assertEqual(meta["candidateCount"], 4)
+
+    def test_weekly_ma_watch_skips_stocks_without_200_weeks(self) -> None:
+        index = pd.date_range("2025-01-03", periods=50, freq="W-FRI")
+        prices = pd.DataFrame({"NEW": np.linspace(100.0, 80.0, len(index))}, index=index)
+        constituents = [
+            Constituent(ticker="NEW", yahooTicker="NEW", companyName="New Listing", sector="Test")
+        ]
+
+        rows, meta = compute_weekly_ma_watch(constituents, prices)
+
+        self.assertEqual(rows, [])
+        self.assertEqual(meta["computed"], 0)
+        self.assertEqual(meta["skipped"], 1)
+
+    def test_price_cache_reuses_a_wider_history_window(self) -> None:
+        PRICE_DATA_CACHE.clear()
+        frame = pd.DataFrame({"AAA": [100.0]})
+        try:
+            price_cache_set("2020-01-01", "2026-08-18", frame)
+            cached = price_cache_get("2025-08-18", "2026-08-18")
+            self.assertIs(cached, frame)
+            self.assertIsNone(price_cache_get("2019-01-01", "2026-08-18"))
+        finally:
+            PRICE_DATA_CACHE.clear()
 
     def test_market_close_falls_back_when_yahoo_returns_empty(self) -> None:
         fred_rows = [("2026-01-02", 100.0), ("2026-01-05", 101.0)]

@@ -5,12 +5,15 @@ import Link from "next/link";
 import clsx from "clsx";
 
 import { fetchAlphaCandidates, fetchAlphaWatchlist } from "@/lib/api";
+import { ASK_ALPHA_EXAMPLES, analyzeAlphaQuestion } from "@/lib/alphaAsk";
 import { formatMoney, formatPct } from "@/lib/format";
 import type { AlphaCandidateRow, AlphaCandidatesResponse } from "@/lib/types";
 
 type RiskMode = "balanced" | "aggressive" | "defensive";
 type RegimeMode = "auto" | "risk_on" | "neutral" | "risk_off";
 type UniverseMode = "sp500" | "watchlist";
+type OptionFilter = "all" | "premium_30d" | "directional" | "no_option";
+type InstitutionalFilter = "all" | "ownership_20" | "adding_10" | "ownership_20_adding_10" | "missing";
 
 type WatchItem = {
   ticker: string;
@@ -29,9 +32,17 @@ type StockWatchlist = {
   tickers: string[];
 };
 
+type AskMessage = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+};
+
 const WATCHLIST_KEY = "alpha-watchlist-v1";
 const STOCK_LISTS_KEY = "alpha-stock-lists-v1";
 const MAX_STOCK_LIST_SIZE = 100;
+const INST_OWNERSHIP_MIN = 20;
+const INST_TRANSACTION_MIN = 10;
 const SECTOR_OPTIONS = [
   "Communication Services",
   "Consumer Discretionary",
@@ -72,6 +83,31 @@ function actionClass(action: string) {
   if (action === "SELL") return "border-rose-500/50 bg-rose-500/10 text-rose-300";
   if (action === "WATCH") return "border-amber-500/50 bg-amber-500/10 text-amber-300";
   return "border-slate-700 bg-slate-900 text-slate-400";
+}
+
+function institutionalPass(row: AlphaCandidateRow) {
+  return (
+    row.institutionalOwnershipPct != null &&
+    row.institutionalOwnershipPct >= INST_OWNERSHIP_MIN &&
+    row.institutionalTransactionPct != null &&
+    row.institutionalTransactionPct >= INST_TRANSACTION_MIN
+  );
+}
+
+function institutionalFilterLabel(filter: InstitutionalFilter) {
+  if (filter === "ownership_20") return "Ownership 20%+";
+  if (filter === "adding_10") return "Adding +10%";
+  if (filter === "ownership_20_adding_10") return "Own 20% + adding";
+  if (filter === "missing") return "Missing inst data";
+  return "All institutional";
+}
+
+function pctValue(v: number | null) {
+  return v == null ? "N/A" : `${v.toFixed(1)}%`;
+}
+
+function signedPctValue(v: number | null) {
+  return v == null ? "N/A" : formatPct(v, 1);
 }
 
 function loadWatchlist(): WatchItem[] {
@@ -165,6 +201,8 @@ export default function AlphaCandidates() {
   const [sector, setSector] = useState("");
   const [riskMode, setRiskMode] = useState<RiskMode>("balanced");
   const [regime, setRegime] = useState<RegimeMode>("auto");
+  const [optionFilter, setOptionFilter] = useState<OptionFilter>("all");
+  const [institutionalFilter, setInstitutionalFilter] = useState<InstitutionalFilter>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [universeMode, setUniverseMode] = useState<UniverseMode>("sp500");
@@ -172,6 +210,8 @@ export default function AlphaCandidates() {
   const [selectedListId, setSelectedListId] = useState("");
   const [tickerInput, setTickerInput] = useState("");
   const [newListName, setNewListName] = useState("");
+  const [askInput, setAskInput] = useState("");
+  const [askMessages, setAskMessages] = useState<AskMessage[]>([]);
 
   useEffect(() => {
     setWatchlist(loadWatchlist());
@@ -197,13 +237,16 @@ export default function AlphaCandidates() {
     setLoading(true);
     setError(null);
     try {
+      const requestedLimit = universeMode === "watchlist" && selectedList
+        ? Math.min(limit, selectedList.tickers.length)
+        : Math.max(5, limit);
       const common = {
-        limit: universeMode === "watchlist" && selectedList ? Math.min(limit, selectedList.tickers.length) : Math.max(5, limit),
+        limit: requestedLimit,
         minScore: universeMode === "watchlist" ? 0 : minScore,
         maxBeta: maxBeta.trim() ? Number(maxBeta) : undefined,
         riskMode,
         regime,
-        enrichTop: Math.min(30, limit),
+        enrichTop: institutionalFilter === "all" ? Math.min(30, requestedLimit) : Math.min(50, requestedLimit),
         refresh: opts?.refresh,
       };
       const payload = universeMode === "watchlist"
@@ -229,12 +272,60 @@ export default function AlphaCandidates() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const rows = data?.candidates ?? [];
+  const allRows = data?.candidates ?? [];
+  const rows = useMemo(() => {
+    return allRows.filter((row) => {
+      const category = row.tradePlan.optionCategory;
+      if (optionFilter === "premium_30d") {
+        if (!(category === "Premium 30D" && row.tradePlan.optionIvGate === "pass")) return false;
+      } else if (optionFilter === "directional") {
+        if (category !== "Directional") return false;
+      } else if (optionFilter === "no_option") {
+        if (row.tradePlan.optionStrategy) return false;
+      }
+
+      const ownershipPass = row.institutionalOwnershipPct != null && row.institutionalOwnershipPct >= INST_OWNERSHIP_MIN;
+      const transactionPass = row.institutionalTransactionPct != null && row.institutionalTransactionPct >= INST_TRANSACTION_MIN;
+      if (institutionalFilter === "ownership_20") return ownershipPass;
+      if (institutionalFilter === "adding_10") return transactionPass;
+      if (institutionalFilter === "ownership_20_adding_10") return ownershipPass && transactionPass;
+      if (institutionalFilter === "missing") return row.institutionalOwnershipPct == null || row.institutionalTransactionPct == null;
+      return true;
+    });
+  }, [allRows, optionFilter, institutionalFilter]);
   const rowByTicker = useMemo(
-    () => new Map(rows.map((r) => [r.ticker, r])),
-    [rows],
+    () => new Map(allRows.map((r) => [r.ticker, r])),
+    [allRows],
   );
   const watched = useMemo(() => new Set(watchlist.map((w) => w.ticker)), [watchlist]);
+  const institutionalStats = useMemo(() => {
+    const ownershipCoverage = allRows.filter((row) => row.institutionalOwnershipPct != null).length;
+    const transactionCoverage = allRows.filter((row) => row.institutionalTransactionPct != null).length;
+    const passCount = allRows.filter(institutionalPass).length;
+    return { ownershipCoverage, transactionCoverage, passCount };
+  }, [allRows]);
+
+  const askAlpha = (prompt?: string) => {
+    const question = (prompt ?? askInput).trim();
+    if (!question) return;
+    const answer = analyzeAlphaQuestion(question, {
+      data,
+      visibleRows: rows,
+      watchlist,
+      filters: {
+        option: optionFilter,
+        institutional: institutionalFilter,
+        universe: universeMode,
+      },
+    });
+    const now = new Date().toISOString();
+    const nextMessages: AskMessage[] = [
+      { role: "user", content: question, createdAt: now },
+      { role: "assistant", content: answer, createdAt: now },
+    ];
+    setAskMessages((prev) => [...prev, ...nextMessages].slice(-10));
+    setAskInput("");
+  };
 
   const addWatch = (row: AlphaCandidateRow) => {
     if (watched.has(row.ticker)) return;
@@ -383,6 +474,31 @@ export default function AlphaCandidates() {
               <option value="risk_on">Risk on</option>
               <option value="neutral">Neutral</option>
               <option value="risk_off">Risk off</option>
+            </select>
+          </Control>
+          <Control label="Options">
+            <select
+              className="w-44 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+              value={optionFilter}
+              onChange={(e) => setOptionFilter(e.target.value as OptionFilter)}
+            >
+              <option value="all">All setups</option>
+              <option value="premium_30d">Premium 30D / IV 50+</option>
+              <option value="directional">Directional only</option>
+              <option value="no_option">No option idea</option>
+            </select>
+          </Control>
+          <Control label="Institutional">
+            <select
+              className="w-52 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+              value={institutionalFilter}
+              onChange={(e) => setInstitutionalFilter(e.target.value as InstitutionalFilter)}
+            >
+              <option value="all">All institutional</option>
+              <option value="ownership_20">Ownership &gt;20%</option>
+              <option value="adding_10">Adding &gt;+10%</option>
+              <option value="ownership_20_adding_10">Own 20% + adding 10%</option>
+              <option value="missing">Missing inst data</option>
             </select>
           </Control>
           <button
@@ -551,10 +667,20 @@ export default function AlphaCandidates() {
       </section>
 
       {data ? (
-        <div className="mb-5 grid gap-3 sm:grid-cols-4">
+        <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           <Metric label="Regime" value={String(data.marketRegime.effectiveState).replace("_", " ")} detail={data.marketRegime.spyTrend} />
           <Metric label="SPY drawdown" value={data.marketRegime.spyDrawdownPct == null ? "N/A" : formatPct(data.marketRegime.spyDrawdownPct)} />
           <Metric label="Candidates" value={`${data.meta.returned} / ${data.meta.computed}`} detail={`${data.meta.total} total`} />
+          <Metric
+            label="Option search"
+            value={optionFilter === "premium_30d" ? `${rows.length} premium 30D` : optionFilter.replace("_", " ")}
+            detail={optionFilter === "all" ? "All option categories" : `${rows.length} of ${allRows.length} visible`}
+          />
+          <Metric
+            label="Institutional"
+            value={institutionalFilter === "ownership_20_adding_10" ? `${institutionalStats.passCount} pass` : institutionalFilterLabel(institutionalFilter)}
+            detail={`${institutionalStats.transactionCoverage}/${allRows.length} 13F change · ${institutionalStats.passCount} pass`}
+          />
           <Metric
             label="Price coverage"
             value={data.meta.coveragePct == null ? "N/A" : `${data.meta.coveragePct}%`}
@@ -568,9 +694,84 @@ export default function AlphaCandidates() {
         <p className="mb-4 text-xs text-amber-300">{data.meta.warnings.join(" ")}</p>
       ) : null}
 
+      <section className="mb-5 rounded-xl border border-cyan-700/40 bg-cyan-950/15 p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-100">Ask Alpha</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {data ? `${rows.length} visible / ${allRows.length} loaded` : "Load a scan first"}
+                </p>
+              </div>
+              <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-200">
+                Local analyst
+              </span>
+            </div>
+            <form
+              className="flex flex-col gap-2 sm:flex-row"
+              onSubmit={(event) => {
+                event.preventDefault();
+                askAlpha();
+              }}
+            >
+              <input
+                className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/60 focus:ring-1 focus:ring-cyan-500/20"
+                value={askInput}
+                placeholder="Ask about candidates, options, institutions, risk, backtests, targets..."
+                onChange={(event) => setAskInput(event.target.value)}
+              />
+              <button
+                type="submit"
+                disabled={!askInput.trim()}
+                className="rounded-md bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
+              >
+                Ask
+              </button>
+            </form>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {ASK_ALPHA_EXAMPLES.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  className="rounded-md border border-slate-700 bg-slate-950/60 px-2.5 py-1.5 text-xs text-slate-300 hover:border-cyan-500/50 hover:text-cyan-200"
+                  onClick={() => askAlpha(example)}
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="max-h-72 min-h-36 overflow-auto rounded-md border border-slate-800 bg-slate-950/50 p-3 lg:w-[520px]">
+            {askMessages.length ? (
+              <div className="space-y-3">
+                {askMessages.map((message, index) => (
+                  <div key={`${message.createdAt}-${index}`} className={message.role === "user" ? "text-right" : "text-left"}>
+                    <div
+                      className={clsx(
+                        "inline-block max-w-full rounded-md px-3 py-2 text-sm leading-relaxed",
+                        message.role === "user"
+                          ? "bg-slate-100 text-slate-950"
+                          : "border border-slate-800 bg-slate-900 text-slate-200",
+                      )}
+                    >
+                      <div className="whitespace-pre-wrap text-left">{message.content}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid h-full place-items-center text-center text-sm text-slate-500">
+                Ask a ticker, setup, or ranking question.
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
       <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/30">
         <div className="overflow-auto">
-          <table className="w-full min-w-[1180px] text-sm">
+          <table className="w-full min-w-[1260px] text-sm">
             <thead className="border-b border-slate-800 bg-slate-950/50 text-xs uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="px-3 py-2 text-left">Rank</th>
@@ -583,6 +784,7 @@ export default function AlphaCandidates() {
                 <th className="px-3 py-2 text-right">RS vs SPY</th>
                 <th className="px-3 py-2 text-right">RS vs sector</th>
                 <th className="px-3 py-2 text-right">Beta</th>
+                <th className="px-3 py-2 text-right">Inst</th>
                 <th className="px-3 py-2 text-right">Backtest</th>
                 <th className="px-3 py-2 text-left">Plan</th>
                 <th className="px-3 py-2 text-right">Action</th>
@@ -624,6 +826,14 @@ export default function AlphaCandidates() {
                       <td className={clsx("px-3 py-2 text-right tabular-nums", pctClass(row.rsVsSpy20d))}>{formatPct(row.rsVsSpy20d)}</td>
                       <td className={clsx("px-3 py-2 text-right tabular-nums", pctClass(row.rsVsSector20d))}>{formatPct(row.rsVsSector20d)}</td>
                       <td className="px-3 py-2 text-right tabular-nums text-slate-300">{row.betaVsSpy.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right text-xs tabular-nums">
+                        <div className={institutionalPass(row) ? "font-semibold text-emerald-300" : "text-slate-300"}>
+                          {pctValue(row.institutionalOwnershipPct)}
+                        </div>
+                        <div className={row.institutionalTransactionPct != null && row.institutionalTransactionPct >= INST_TRANSACTION_MIN ? "text-emerald-300" : "text-slate-500"}>
+                          {signedPctValue(row.institutionalTransactionPct)}
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-right text-xs tabular-nums text-slate-300">
                         {bt20 ? `${formatPct(bt20.alphaAvgReturn)} / ${bt20.winRate.toFixed(0)}%` : "N/A"}
                       </td>
@@ -647,7 +857,7 @@ export default function AlphaCandidates() {
                     </tr>
                     {isOpen ? (
                       <tr className="border-b border-slate-800 bg-slate-950/30">
-                        <td colSpan={13} className="px-4 py-4">
+                        <td colSpan={14} className="px-4 py-4">
                           <CandidateDetail row={row} />
                         </td>
                       </tr>
@@ -657,7 +867,7 @@ export default function AlphaCandidates() {
               })}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="px-4 py-8 text-sm text-slate-400">
+                  <td colSpan={14} className="px-4 py-8 text-sm text-slate-400">
                     {loading ? "Scanning..." : "No candidates match the current filters."}
                   </td>
                 </tr>
@@ -776,6 +986,7 @@ function Metric(props: { label: string; value: string; detail?: string }) {
 
 function CandidateDetail(props: { row: AlphaCandidateRow }) {
   const row = props.row;
+  const instPass = institutionalPass(row);
   return (
     <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
       <div>
@@ -800,13 +1011,64 @@ function CandidateDetail(props: { row: AlphaCandidateRow }) {
           </div>
           {row.tradePlan.optionStrategy ? (
             <div className="mt-3 rounded border border-sky-500/30 bg-sky-500/10 p-2 text-xs text-sky-200">
+              <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                {row.tradePlan.optionCategory ? (
+                  <span className="rounded border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 font-semibold text-sky-100">
+                    {row.tradePlan.optionCategory}
+                  </span>
+                ) : null}
+                <span>{row.tradePlan.optionDte == null ? "DTE N/A" : `${row.tradePlan.optionDte} DTE`}</span>
+                <span>
+                  IV proxy {row.tradePlan.optionIvProxy == null ? "N/A" : `${row.tradePlan.optionIvProxy.toFixed(1)}%`}
+                </span>
+                <span className={row.tradePlan.optionIvGate === "pass" ? "text-emerald-300" : "text-amber-300"}>
+                  {row.tradePlan.optionIvGate === "pass" ? "IV gate pass" : "IV gate below 50"}
+                </span>
+              </div>
               <b>{row.tradePlan.optionStrategy}</b>
               {" "} / {row.tradePlan.optionDirection}
               {" "} / strike {row.tradePlan.optionStrike == null ? "N/A" : formatMoney(row.tradePlan.optionStrike)}
               {" "} / expiry {row.tradePlan.optionExpiry ?? "N/A"}
               <div className="mt-1 text-sky-200/80">{row.tradePlan.optionRationale}</div>
+              {row.tradePlan.optionRules.length ? (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {row.tradePlan.optionRules.map((rule) => (
+                    <span key={rule} className="rounded border border-slate-700 bg-slate-950/50 px-1.5 py-0.5 text-[11px] text-slate-300">
+                      {rule}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
+          <div className="mt-3 rounded border border-violet-500/30 bg-violet-500/10 p-2 text-xs text-violet-100">
+            <div className="mb-1 flex flex-wrap items-center gap-1.5">
+              <span className={clsx(
+                "rounded border px-1.5 py-0.5 font-semibold",
+                instPass
+                  ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+                  : "border-violet-400/30 bg-violet-400/10 text-violet-100",
+              )}>
+                {instPass ? "Institutional pass" : "Institutional watch"}
+              </span>
+              <span>Own {pctValue(row.institutionalOwnershipPct)}</span>
+              <span>Adding {signedPctValue(row.institutionalTransactionPct)}</span>
+              {row.institutionalDataSource ? <span>{row.institutionalDataSource}</span> : null}
+              {row.institutionalSourceDate ? <span>{row.institutionalSourceDate}</span> : null}
+            </div>
+            <div className="text-violet-100/80">
+              Scanner: institutions own at least {INST_OWNERSHIP_MIN}% and added at least +{INST_TRANSACTION_MIN}% in 13F share-change data.
+            </div>
+            {row.institutionalNotes.length ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {row.institutionalNotes.map((note) => (
+                  <span key={note} className="rounded border border-slate-700 bg-slate-950/50 px-1.5 py-0.5 text-[11px] text-slate-300">
+                    {note}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">Signals</div>
         <div className="grid gap-2 md:grid-cols-2">

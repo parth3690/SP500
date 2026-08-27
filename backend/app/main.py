@@ -23,6 +23,7 @@ from .models import (
     CrossoverRow, CrossoversResponse,
     OversoldRow, OversoldResponse,
     OverboughtRow, OverboughtResponse,
+    WeeklyMaWatchRow, WeeklyMaWatchResponse,
     MultibaggerResponse,
     MarketConditionsFetchResponse,
     AlphaCandidatesResponse,
@@ -31,10 +32,10 @@ from .models import (
     AgentBotRunResponse,
 )
 from .services.cache import (
-    MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE,
-    PRICE_DATA_CACHE, MOVE_FINDER_CACHE, MULTIBAGGER_CACHE, MARKET_CONDITIONS_CACHE,
+    MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE, WEEKLY_MA_SCAN_CACHE,
+    MOVE_FINDER_CACHE, MULTIBAGGER_CACHE, MARKET_CONDITIONS_CACHE,
     ALPHA_CACHE,
-    cache_get, cache_set,
+    cache_get, cache_set, price_cache_get, price_cache_set,
     clear_research_and_price_caches,
 )
 from .services.movers import compute_movers
@@ -47,6 +48,7 @@ from .services.rsi_scan import (
     compute_rsi_scan_daily_oversold,
     compute_rsi_scan_daily_overbought,
 )
+from .services.weekly_ma_scan import compute_weekly_ma_watch
 from .services.prices import fetch_close_prices
 from .services.valuations import attach_pe_metrics, fetch_pe_metrics
 from .services.sp500 import (
@@ -57,7 +59,7 @@ from .services.sp500 import (
 )
 from .services.multibagger import scan_ticker
 from .services.market_conditions import fetch_all_market_conditions
-from .services.alpha import alpha_universe_tickers, compute_alpha_candidates
+from .services.alpha import ALPHA_CACHE_VERSION, alpha_universe_tickers, compute_alpha_candidates
 from .services.agent_bot import run_agent_bot
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
@@ -100,21 +102,22 @@ def _get_shared_price_data(
     Fetch (or reuse cached) close prices for all S&P 500 tickers.
     This avoids redundant Yahoo Finance downloads across endpoints.
     """
-    cache_key = f"prices_{start.isoformat()}_{end.isoformat()}"
+    start_iso = start.isoformat()
+    end_iso = end.isoformat()
     if not refresh:
-        cached = cache_get(PRICE_DATA_CACHE, cache_key)
+        cached = price_cache_get(start_iso, end_iso)
         if cached is not None:
             return cached
 
     with _PRICE_FETCH_LOCK:
         if not refresh:
-            cached = cache_get(PRICE_DATA_CACHE, cache_key)
+            cached = price_cache_get(start_iso, end_iso)
             if cached is not None:
                 return cached
         prices = fetch_close_prices(yahoo_tickers, start, end)
         coverage = _price_coverage(prices, yahoo_tickers, min_rows=2)
         if coverage["coveragePct"] >= 90.0:
-            cache_set(PRICE_DATA_CACHE, cache_key, prices)
+            price_cache_set(start_iso, end_iso, prices)
         return prices
 
 
@@ -449,6 +452,50 @@ async def crossovers(
         thresholdPct=threshold,
         nearGoldenCross=near_golden,
         nearDeathCross=near_death,
+        meta=cached["meta"],
+    )
+
+
+@app.get("/api/weekly-ma-watch", response_model=WeeklyMaWatchResponse)
+async def weekly_ma_watch(
+    length: int = Query(200, ge=20, le=300, description="Weekly SMA lookback length"),
+    near_pct: float = Query(2.0, alias="nearPct", ge=0.0, le=10.0, description="Early-warning distance above the SMA"),
+    refresh: bool = Query(False),
+) -> WeeklyMaWatchResponse:
+    """Scan the S&P 500 using the uploaded Pine watch's default SMA rules."""
+    cache_key = f"weekly_ma_watch_sma_{length}_{near_pct}"
+    cached = None if refresh else cache_get(WEEKLY_MA_SCAN_CACHE, cache_key)
+    if cached is None:
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        yahoo_tickers = get_yahoo_tickers(constituents_list)
+        end_date = date.today()
+        # Six years provides enough buffer for 200 valid weekly closes and holidays.
+        start_date = end_date - timedelta(days=6 * 366)
+        close_prices = await run_in_threadpool(
+            _get_shared_price_data, yahoo_tickers, start_date, end_date, refresh=refresh
+        )
+        _require_price_coverage(close_prices, yahoo_tickers, minimum_pct=90.0, min_rows=2)
+        rows, meta = await run_in_threadpool(
+            compute_weekly_ma_watch,
+            constituents_list,
+            close_prices,
+            ma_length=length,
+            near_pct=near_pct,
+        )
+        cached = {
+            "rows": rows,
+            "meta": meta,
+            "asOf": datetime.now(timezone.utc),
+        }
+        if meta.get("computed", 0) > 0:
+            cache_set(WEEKLY_MA_SCAN_CACHE, cache_key, cached)
+
+    return WeeklyMaWatchResponse(
+        asOf=cached["asOf"],
+        maLength=length,
+        maType="SMA",
+        nearPct=near_pct,
+        stocks=[WeeklyMaWatchRow(**row) for row in cached["rows"]],
         meta=cached["meta"],
     )
 
@@ -789,6 +836,7 @@ async def alpha_candidates(
     sector_value = sector.strip() if sector and sector.strip() else None
     cache_key = (
         "alpha_candidates",
+        ALPHA_CACHE_VERSION,
         limit,
         round(min_score, 2),
         sector_value,
@@ -855,6 +903,7 @@ async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResp
     yahoo_tickers = [c.yahooTicker for c in custom_constituents]
     cache_key = (
         "alpha_watchlist",
+        ALPHA_CACHE_VERSION,
         tuple(yahoo_tickers),
         request.limit,
         round(request.minScore, 2),
