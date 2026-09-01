@@ -30,11 +30,12 @@ from .models import (
     AlphaWatchlistRequest,
     AgentBotRunRequest,
     AgentBotRunResponse,
+    InstitutionalScannerResponse,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE, WEEKLY_MA_SCAN_CACHE,
     MOVE_FINDER_CACHE, MULTIBAGGER_CACHE, MARKET_CONDITIONS_CACHE,
-    ALPHA_CACHE,
+    ALPHA_CACHE, INSTITUTIONAL_SCANNER_CACHE,
     cache_get, cache_set, price_cache_get, price_cache_set,
     clear_research_and_price_caches,
 )
@@ -60,6 +61,7 @@ from .services.sp500 import (
 from .services.multibagger import scan_ticker
 from .services.market_conditions import fetch_all_market_conditions
 from .services.alpha import ALPHA_CACHE_VERSION, alpha_universe_tickers, compute_alpha_candidates
+from .services.institutional_scanner import INSTITUTIONAL_SCANNER_VERSION, scan_institutional_grade
 from .services.agent_bot import run_agent_bot
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
@@ -976,6 +978,172 @@ async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResp
     if payload.get("meta", {}).get("status") == "complete":
         cache_set(ALPHA_CACHE, cache_key, payload)
     return AlphaCandidatesResponse(**payload)
+
+
+@app.get("/api/institutional-scanner", response_model=InstitutionalScannerResponse)
+async def institutional_scanner(
+    universe: str = Query("sp500", pattern="^(sp500|nyse_smid)$", description="Universe: sp500 or nyse_smid ($100M-$2B)"),
+    limit: int = Query(20, ge=5, le=50, description="Maximum number of candidates to return"),
+    min_score: float = Query(65.0, ge=0.0, le=100.0, alias="minScore", description="Minimum alpha score threshold"),
+    sector: Optional[str] = Query(None, description="Filter by sector"),
+    max_beta: Optional[float] = Query(None, ge=0.1, le=5.0, alias="maxBeta", description="Maximum beta threshold"),
+    risk_mode: str = Query("balanced", pattern="^(balanced|aggressive|defensive)$", alias="riskMode"),
+    regime: str = Query("auto", pattern="^(auto|risk_on|neutral|risk_off)$"),
+    refresh: bool = Query(False),
+) -> InstitutionalScannerResponse:
+    """
+    Institutional-grade trade scanner.
+    
+    Supports two universes:
+    - sp500: S&P 500 stocks (default)
+    - nyse_smid: NYSE-listed common stocks with $100M-$2B market cap
+    
+    Runs walk-forward backtests, validates under simulation scenarios,
+    computes calibrated confidence estimates, applies hard trade gate (TAKE/PASS),
+    and detects high-convexity option opportunities (when data available).
+    """
+    from .services.sp500 import get_nyse_smid_constituents_cached
+    
+    sector_value = sector.strip() if sector and sector.strip() else None
+    cache_key = (
+        "institutional_scanner",
+        INSTITUTIONAL_SCANNER_VERSION,
+        universe,
+        limit,
+        round(min_score, 2),
+        sector_value,
+        round(max_beta, 2) if max_beta is not None else None,
+        risk_mode,
+        regime,
+    )
+    
+    if not refresh:
+        cached = cache_get(INSTITUTIONAL_SCANNER_CACHE, cache_key)
+        if cached is not None:
+            return InstitutionalScannerResponse(**cached)
+
+    # Load constituents based on universe
+    if universe == "nyse_smid":
+        constituents_list = await run_in_threadpool(get_nyse_smid_constituents_cached, refresh=refresh)
+        if not constituents_list:
+            # No FMP API key or failed to fetch
+            raise HTTPException(
+                status_code=503,
+                detail="NYSE SMID universe requires FMP_API_KEY. Set the key in environment to enable this feature.",
+            )
+        universe_name = "NYSE SMID ($100M-$2B)"
+    else:  # sp500
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        universe_name = "S&P 500"
+    
+    end_date = date.today()
+    start_date = end_date - timedelta(days=760)
+    
+    # Use shared price cache
+    price_key = ("institutional_prices", universe, start_date.isoformat(), end_date.isoformat())
+    close_prices = None if refresh else cache_get(INSTITUTIONAL_SCANNER_CACHE, price_key)
+    fetched_prices = close_prices is None
+    
+    if close_prices is None:
+        tickers = alpha_universe_tickers(constituents_list)
+        close_prices = await run_in_threadpool(fetch_close_prices, tickers, start_date, end_date)
+
+    coverage = _require_price_coverage(
+        close_prices,
+        [c.yahooTicker for c in constituents_list],
+        minimum_pct=85.0 if universe == "nyse_smid" else 90.0,  # Lower threshold for SMID
+        min_rows=260,  # Need 260 days for walk-forward backtest
+    )
+    
+    if "SPY" not in getattr(close_prices, "columns", []):
+        raise HTTPException(
+            status_code=503,
+            detail="SPY benchmark history is unavailable, so institutional scanner was withheld.",
+        )
+    
+    if fetched_prices:
+        cache_set(INSTITUTIONAL_SCANNER_CACHE, price_key, close_prices)
+
+    payload = await run_in_threadpool(
+        scan_institutional_grade,
+        constituents_list,
+        close_prices,
+        limit=limit,
+        min_score=min_score,
+        sector=sector_value,
+        max_beta=max_beta,
+        risk_mode=risk_mode,
+        regime_override=regime,
+    )
+    
+    payload["meta"] = {
+        **payload["meta"],
+        **coverage,
+        "universe": universe_name,
+        "universeType": universe,
+    }
+    
+    if payload.get("meta", {}).get("status") == "complete":
+        cache_set(INSTITUTIONAL_SCANNER_CACHE, cache_key, payload)
+    
+    return InstitutionalScannerResponse(**payload)
+
+
+@app.get("/api/nyse-smid-agent", response_model=InstitutionalScannerResponse)
+async def nyse_smid_agent(
+    tickers: Optional[str] = Query(None, description="Comma-separated ticker list (optional)"),
+    limit: int = Query(20, ge=5, le=50, description="Maximum number of candidates to return"),
+    min_score: float = Query(65.0, ge=0.0, le=100.0, alias="minScore", description="Minimum alpha score threshold"),
+    risk_mode: str = Query("balanced", pattern="^(balanced|aggressive|defensive)$", alias="riskMode"),
+    regime: str = Query("auto", pattern="^(auto|risk_on|neutral|risk_off)$"),
+    refresh: bool = Query(False),
+) -> InstitutionalScannerResponse:
+    """
+    NYSE SMID Agent - Institutional scanner for small-mid cap NYSE stocks ($100M-$2B).
+    
+    Reuses the existing S&P 500 data pipeline to scan individual stocks:
+    - NYSE listings from FMP
+    - Prices from shared fetch_close_prices
+    - Alpha engine (compute_alpha_candidates)
+    - Institutional gate (backtest + simulation + confidence)
+    
+    Returns TAKE/PASS book with the same conservative gate as S&P 500 scanner.
+    """
+    from .services.nyse_smid_agent import run_nyse_smid_agent
+    
+    # Parse tickers if provided
+    ticker_list: list[str] | None = None
+    if tickers:
+        ticker_list = [t.strip() for t in tickers.split(",") if t.strip()]
+    
+    cache_key = (
+        "nyse_smid_agent",
+        tuple(ticker_list) if ticker_list else None,
+        limit,
+        round(min_score, 2),
+        risk_mode,
+        regime,
+    )
+    
+    if not refresh:
+        cached = cache_get(INSTITUTIONAL_SCANNER_CACHE, cache_key)
+        if cached is not None:
+            return InstitutionalScannerResponse(**cached)
+    
+    payload = await run_in_threadpool(
+        run_nyse_smid_agent,
+        ticker_list,
+        limit=limit,
+        min_score=min_score,
+        risk_mode=risk_mode,
+        regime=regime,
+        refresh=refresh,
+    )
+    
+    if payload.get("meta", {}).get("status") == "complete":
+        cache_set(INSTITUTIONAL_SCANNER_CACHE, cache_key, payload)
+    
+    return InstitutionalScannerResponse(**payload)
 
 
 @app.post("/api/agent-bot/run", response_model=AgentBotRunResponse)

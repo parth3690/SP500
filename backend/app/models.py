@@ -424,3 +424,90 @@ class AgentBotRunResponse(BaseModel):
     forwardJournal: AgentBotForwardJournal
     catalysts: dict[str, AgentBotCatalyst]
     meta: dict[str, Any]
+
+
+class InstitutionalBacktest(BaseModel):
+    winRate: Optional[float] = None
+    avgReturn: Optional[float] = None
+    medianReturn: Optional[float] = None
+    benchmarkAvgReturn: Optional[float] = None
+    alphaAvgReturn: Optional[float] = None
+    maxDrawdown: Optional[float] = None
+    sampleSize: int
+    valid: bool
+
+
+class InstitutionalSimulationScenario(BaseModel):
+    winRate: float
+    avgReturn: float
+    survives: bool
+
+
+class InstitutionalSimulation(BaseModel):
+    scenarios: dict[str, InstitutionalSimulationScenario]
+    allScenariosSurvive: bool
+
+
+class InstitutionalConfidence(BaseModel):
+    confidence: float
+    sampleSize: int
+    trustworthy: bool
+    reason: str
+
+
+class InstitutionalTradeGate(BaseModel):
+    decision: str = Field(..., description="'TAKE' or 'PASS'")
+    reasons: list[str]
+    gateConditions: dict[str, bool]
+
+
+class InstitutionalConvexityAlert(BaseModel):
+    ticker: str
+    type: str
+    probability: float
+    expectedReturn: str
+    requiredStockMove: float
+    currentPrice: float
+    volatility: float
+    alphaScore: float
+    message: str
+
+
+class InstitutionalCandidate(BaseModel):
+    rank: int
+    ticker: str
+    companyName: str
+    sector: str
+    currentPrice: float
+    priceDate: date
+    alphaScore: float
+    technicalScore: float
+    riskAdjustedScore: float
+    expectedReturn20d: float
+    momentum20d: float
+    momentum63d: float
+    rsVsSpy20d: float
+    rsVsSector20d: float
+    sectorStrength20d: float
+    volatility20d: float
+    betaVsSpy: float
+    maxDrawdown63d: float
+    trendState: str
+    factorExposure: str
+    regimeFit: str
+    tradePlan: AlphaTradePlan
+    signals: list[AlphaSignal]
+    backtests: list[AlphaBacktestMetric]
+    backtest: InstitutionalBacktest
+    simulation: InstitutionalSimulation
+    confidence: InstitutionalConfidence
+    tradeGate: InstitutionalTradeGate
+    convexityAlert: Optional[InstitutionalConvexityAlert] = None
+
+
+class InstitutionalScannerResponse(BaseModel):
+    asOf: datetime
+    marketRegime: dict[str, Any]
+    candidates: list[InstitutionalCandidate]
+    convexityAlerts: list[InstitutionalConvexityAlert]
+    meta: dict[str, Any]

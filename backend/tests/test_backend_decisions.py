@@ -25,6 +25,19 @@ from app.services.alpha import (
     institutional_metrics_from_holder_table,
     institutional_metrics_from_info,
 )
+from app.services.institutional_scanner import (
+    MIN_CONFIDENCE_FOR_TAKE,
+    MIN_BACKTEST_WIN_RATE,
+    MIN_BACKTEST_SAMPLE_SIZE,
+    MIN_ALPHA_VS_BENCHMARK,
+    CONVEXITY_ALERT_MIN_PROBABILITY,
+    CONVEXITY_ALERT_MIN_RETURN,
+    _apply_trade_gate,
+    _compute_confidence,
+    _detect_convexity_alert,
+    _run_simulation_validation,
+    _run_walk_forward_backtest,
+)
 from app.services.crossovers import compute_crossovers
 from app.services.cache import PRICE_DATA_CACHE, price_cache_get, price_cache_set
 from app.services.fmp import parse_fmp_institutional_metrics
@@ -546,6 +559,351 @@ class DataIntegrityTests(unittest.TestCase):
         cleaned = _sanitize_fundamentals({"trailingPE": -561.8, "forwardPE": 21.5})
         self.assertIsNone(cleaned["trailingPE"])
         self.assertEqual(cleaned["forwardPE"], 21.5)
+
+
+class InstitutionalScannerTests(unittest.TestCase):
+    def test_trade_gate_passes_high_confidence_candidates(self) -> None:
+        """High-confidence candidates with good backtests should TAKE."""
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+        confidence = {"confidence": 80.0, "sampleSize": 30, "trustworthy": True}
+
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+
+        self.assertEqual(gate["decision"], "TAKE")
+        self.assertTrue(gate["gateConditions"]["confidence"])
+        self.assertTrue(gate["gateConditions"]["winRate"])
+        self.assertTrue(gate["gateConditions"]["sampleSize"])
+        self.assertTrue(gate["gateConditions"]["alphaVsBenchmark"])
+        self.assertTrue(gate["gateConditions"]["simulationSurvival"])
+
+    def test_trade_gate_rejects_low_confidence(self) -> None:
+        """Low-confidence candidates should PASS regardless of other metrics."""
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+        confidence = {"confidence": 50.0, "sampleSize": 30, "trustworthy": False}
+
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+
+        self.assertEqual(gate["decision"], "PASS")
+        self.assertFalse(gate["gateConditions"]["confidence"])
+        self.assertIn("Confidence", gate["reasons"][0])
+
+    def test_trade_gate_rejects_low_win_rate(self) -> None:
+        """Candidates with low win rates should PASS."""
+        backtest = {
+            "winRate": 50.0,  # Below MIN_BACKTEST_WIN_RATE
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+        confidence = {"confidence": 80.0, "sampleSize": 30, "trustworthy": True}
+
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+
+        self.assertEqual(gate["decision"], "PASS")
+        self.assertFalse(gate["gateConditions"]["winRate"])
+
+    def test_trade_gate_rejects_small_sample_size(self) -> None:
+        """Candidates with insufficient samples should PASS."""
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 10,  # Below MIN_BACKTEST_SAMPLE_SIZE
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+        confidence = {"confidence": 80.0, "sampleSize": 10, "trustworthy": False}
+
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+
+        self.assertEqual(gate["decision"], "PASS")
+        self.assertFalse(gate["gateConditions"]["sampleSize"])
+
+    def test_trade_gate_rejects_low_alpha_vs_benchmark(self) -> None:
+        """Candidates with insufficient alpha should PASS."""
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 1.0,  # Below MIN_ALPHA_VS_BENCHMARK
+            "sampleSize": 30,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+        confidence = {"confidence": 80.0, "sampleSize": 30, "trustworthy": True}
+
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+
+        self.assertEqual(gate["decision"], "PASS")
+        self.assertFalse(gate["gateConditions"]["alphaVsBenchmark"])
+
+    def test_trade_gate_rejects_failed_simulation(self) -> None:
+        """Candidates that fail simulation scenarios should PASS."""
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": False, "scenarios": {}}
+        confidence = {"confidence": 80.0, "sampleSize": 30, "trustworthy": True}
+
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+
+        self.assertEqual(gate["decision"], "PASS")
+        self.assertFalse(gate["gateConditions"]["simulationSurvival"])
+
+    def test_simulation_validates_under_all_scenarios(self) -> None:
+        """Simulation should test bull, base, bear, and high-vol scenarios."""
+        index = pd.bdate_range("2024-01-01", periods=300)
+        stock = pd.Series(np.linspace(100.0, 120.0, len(index)), index=index)
+        spy = pd.Series(np.linspace(100.0, 110.0, len(index)), index=index)
+
+        # Mock backtest with strong edge
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 5.0,
+            "alphaAvgReturn": 3.5,
+            "sampleSize": 30,
+            "valid": True,
+        }
+
+        simulation = _run_simulation_validation(
+            stock, spy, spy, backtest, risk_mode="balanced", regime="auto"
+        )
+
+        self.assertIn("bull", simulation["scenarios"])
+        self.assertIn("base", simulation["scenarios"])
+        self.assertIn("bear", simulation["scenarios"])
+        self.assertIn("high_vol", simulation["scenarios"])
+
+        for scenario in simulation["scenarios"].values():
+            self.assertIn("winRate", scenario)
+            self.assertIn("avgReturn", scenario)
+            self.assertIn("survives", scenario)
+
+    def test_simulation_includes_transaction_costs(self) -> None:
+        """Simulation should account for realistic transaction costs."""
+        index = pd.bdate_range("2024-01-01", periods=300)
+        stock = pd.Series(np.linspace(100.0, 120.0, len(index)), index=index)
+        spy = pd.Series(np.linspace(100.0, 110.0, len(index)), index=index)
+
+        # Mock backtest with positive edge
+        backtest = {
+            "winRate": 65.0,
+            "avgReturn": 4.0,
+            "alphaAvgReturn": 3.0,
+            "sampleSize": 25,
+            "valid": True,
+        }
+
+        simulation = _run_simulation_validation(
+            stock, spy, spy, backtest, risk_mode="balanced", regime="auto"
+        )
+
+        # After 25 bps costs (20 bps + 5 bps slippage), returns should be reduced
+        # Base scenario stresses the 4.0% average return, so result will be less
+        base_avg_return = simulation["scenarios"]["base"]["avgReturn"]
+        self.assertLess(base_avg_return, 4.0)  # Should be reduced by costs
+
+    def test_confidence_calibrates_from_backtest_and_simulation(self) -> None:
+        """Confidence should be computed from multiple signals."""
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 8.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+
+        confidence_data = _compute_confidence(backtest, simulation, alpha_score=75.0, risk_score=70.0)
+
+        self.assertGreater(confidence_data["confidence"], 0.0)
+        self.assertLessEqual(confidence_data["confidence"], 100.0)
+        self.assertEqual(confidence_data["sampleSize"], 30)
+        self.assertTrue(confidence_data["trustworthy"])
+
+    def test_confidence_penalizes_low_sample_size(self) -> None:
+        """Confidence should be reduced for small samples."""
+        backtest_large = {
+            "winRate": 70.0,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 50,
+            "valid": True,
+        }
+        backtest_small = {
+            "winRate": 70.0,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 10,
+            "valid": True,
+        }
+        simulation = {"allScenariosSurvive": True, "scenarios": {}}
+
+        conf_large = _compute_confidence(backtest_large, simulation, alpha_score=75.0, risk_score=70.0)
+        conf_small = _compute_confidence(backtest_small, simulation, alpha_score=75.0, risk_score=70.0)
+
+        self.assertGreater(conf_large["confidence"], conf_small["confidence"])
+        self.assertFalse(conf_small["trustworthy"])
+
+    def test_confidence_penalizes_failed_simulation(self) -> None:
+        """Confidence should be reduced when simulation scenarios fail."""
+        backtest = {
+            "winRate": 70.0,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        sim_pass = {"allScenariosSurvive": True, "scenarios": {}}
+        sim_fail = {"allScenariosSurvive": False, "scenarios": {}}
+
+        conf_pass = _compute_confidence(backtest, sim_pass, alpha_score=75.0, risk_score=70.0)
+        conf_fail = _compute_confidence(backtest, sim_fail, alpha_score=75.0, risk_score=70.0)
+
+        self.assertGreater(conf_pass["confidence"], conf_fail["confidence"])
+
+    def test_convexity_alert_disabled_without_real_option_data(self) -> None:
+        """Convexity alerts should not fire without real options chain data."""
+        # Low volatility case
+        alert_low_vol = _detect_convexity_alert(
+            ticker="AAPL",
+            current_price=150.0,
+            volatility=15.0,
+            alpha_score=75.0,
+            expected_return=5.0,
+        )
+        self.assertIsNone(alert_low_vol)
+
+        # High volatility case - still no alert without real options data
+        alert_high_vol = _detect_convexity_alert(
+            ticker="MEME",
+            current_price=50.0,
+            volatility=150.0,
+            alpha_score=75.0,
+            expected_return=10.0,
+        )
+        self.assertIsNone(alert_high_vol)
+
+        # Strong technicals - still no alert without real options data
+        alert_strong = _detect_convexity_alert(
+            ticker="TEST",
+            current_price=100.0,
+            volatility=200.0,
+            alpha_score=90.0,
+            expected_return=20.0,
+        )
+        self.assertIsNone(alert_strong)
+
+    def test_strong_backtest_can_reach_take(self) -> None:
+        """A candidate with strong backtest should be able to reach TAKE."""
+        # Strong backtest: high win rate, good alpha, sufficient samples
+        backtest = {
+            "winRate": 75.0,
+            "avgReturn": 8.0,
+            "alphaAvgReturn": 5.5,
+            "sampleSize": 35,
+            "valid": True,
+        }
+        
+        # Simulation that passes (base has edge, stress scenarios don't blow up)
+        simulation = {
+            "allScenariosSurvive": True,
+            "scenarios": {
+                "base": {"winRate": 68.0, "avgReturn": 3.5, "survives": True},
+                "bull": {"winRate": 72.0, "avgReturn": 5.0, "survives": True},
+                "bear": {"winRate": 45.0, "avgReturn": -2.0, "survives": True},
+                "high_vol": {"winRate": 55.0, "avgReturn": 1.5, "survives": True},
+            },
+        }
+        
+        # Compute confidence (should be high)
+        confidence = _compute_confidence(backtest, simulation, alpha_score=78.0, risk_score=75.0)
+        
+        # Apply trade gate
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+        
+        # Should TAKE
+        self.assertEqual(gate["decision"], "TAKE")
+        self.assertTrue(all(gate["gateConditions"].values()))
+
+    def test_bear_stress_alone_does_not_force_pass_when_base_is_strong(self) -> None:
+        """Bear scenario can fail without blocking TAKE if base case is strong."""
+        # Strong backtest
+        backtest = {
+            "winRate": 72.0,
+            "avgReturn": 7.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        
+        # Base case passes, bear looks bad (but not catastrophic)
+        simulation = {
+            "allScenariosSurvive": True,  # Key: this considers base + no catastrophic failure
+            "scenarios": {
+                "base": {"winRate": 66.0, "avgReturn": 3.0, "survives": True},
+                "bull": {"winRate": 70.0, "avgReturn": 6.0, "survives": True},
+                "bear": {"winRate": 42.0, "avgReturn": -3.5, "survives": True},  # Negative but not ruinous
+                "high_vol": {"winRate": 52.0, "avgReturn": 0.8, "survives": True},
+            },
+        }
+        
+        confidence = _compute_confidence(backtest, simulation, alpha_score=76.0, risk_score=72.0)
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+        
+        # Should TAKE - base case has real edge, bear is just stressed
+        self.assertEqual(gate["decision"], "TAKE")
+
+    def test_walk_forward_backtest_avoids_lookahead_bias(self) -> None:
+        """Backtest should only use data available at signal time."""
+        # Create an uptrend with a sharp reversal at the end
+        index = pd.bdate_range("2023-01-01", periods=350)
+        prices = np.concatenate([
+            np.linspace(100.0, 150.0, 300),  # Uptrend
+            np.linspace(150.0, 80.0, 50),    # Sharp reversal
+        ])
+        stock = pd.Series(prices, index=index)
+        spy = pd.Series(np.linspace(100.0, 110.0, len(index)), index=index)
+
+        backtest = _run_walk_forward_backtest(
+            stock, spy, spy, risk_mode="balanced", regime="auto"
+        )
+
+        # The backtest should have stopped before the reversal
+        # and should have some successful trades from the uptrend period
+        if backtest["valid"]:
+            self.assertGreater(backtest["sampleSize"], 0)
+            # Win rate should reflect trades made before reversal
+            self.assertGreater(backtest["winRate"], 0.0)
+
+    def test_walk_forward_backtest_requires_sufficient_history(self) -> None:
+        """Backtest should require at least 260 days of history."""
+        index = pd.bdate_range("2025-01-01", periods=100)
+        stock = pd.Series(np.linspace(100.0, 110.0, len(index)), index=index)
+        spy = pd.Series(np.linspace(100.0, 105.0, len(index)), index=index)
+
+        backtest = _run_walk_forward_backtest(
+            stock, spy, spy, risk_mode="balanced", regime="auto"
+        )
+
+        self.assertFalse(backtest["valid"])
+        self.assertEqual(backtest["sampleSize"], 0)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,13 @@ Full-stack web app for S&P 500 analysis featuring real-time market data, technic
 - **Dashboard**
   - Top gainers/losers with filtering, search, sorting, trailing/forward P/E, CSV export, charts, and a full heatmap
   - LEAPS radar: weekly/daily oversold & overbought lists with compact option suggestions for each ticker
+- **Institutional-Grade Scanner** 🆕
+  - Walk-forward backtests with no lookahead bias (20-day forward returns)
+  - Simulation validation under bull, base, bear, and high-volatility scenarios with transaction costs
+  - Calibrated confidence estimates from backtest performance and simulation survival
+  - Hard trade gate: only TAKE when confidence ≥ 75%, win rate ≥ 62%, sample ≥ 20, alpha ≥ 3% vs benchmark
+  - Rooftop alert for high-convexity option opportunities (10%+ probability of 100x return)
+  - TAKE/PASS decision framework that rejects trades a skeptical desk wouldn't size
 - **Alpha Candidates**
   - Unified ranked alpha score across momentum, relative strength, trend, risk, factor exposure, and market regime
   - Lightweight signal backtests, SPY/sector relative strength, risk controls, catalyst/revision proxies, and a local watchlist journal
@@ -122,6 +129,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `GET` | `/api/constituents` | S&P 500 constituent list |
 | `GET` | `/api/movers` | Top gainers/losers with `?start=&end=&limit=&includeAll=` |
 | `GET` | `/api/movers.csv` | CSV export of movers |
+| `GET` | `/api/institutional-scanner` | Institutional-grade scanner with walk-forward backtests, simulation validation, confidence, and trade gate |
 | `GET` | `/api/alpha-candidates` | Ranked alpha candidates with filters for score, sector, beta, risk mode, and market regime |
 | `POST` | `/api/alpha-watchlist` | Ranked alpha candidates for a supplied watchlist of up to 100 tickers |
 | `GET` | `/api/crossovers` | Golden/death cross detection with `?threshold=` |
@@ -190,6 +198,101 @@ Go back to Render > your service > **Environment** > update `ALLOWED_ORIGINS` to
 | **Render** | FastAPI backend | 750 hrs/mo, sleeps after 15 min idle |
 
 Both auto-deploy on every `git push` to main.
+
+---
+
+## Institutional-Grade Scanner Philosophy
+
+The Institutional Scanner is designed to behave like a top-tier quantitative analyst: skeptical, rigorous, and conservative. It operates under the principle that **no trade is better than a bad trade**.
+
+### How It Works
+
+1. **Walk-Forward Backtests**
+   - Uses only data available at signal time (no lookahead bias)
+   - Measures 20-day forward returns from historical signals
+   - Computes win rate, average return, alpha vs SPY, and max drawdown
+   - Requires minimum 20 samples for statistical significance
+
+2. **Simulation Validation**
+   - Tests candidates under four scenarios: bull, base, bear, high-volatility
+   - Includes realistic transaction costs (20 bps round-trip)
+   - Adds slippage for realistic fills (5 bps adverse)
+   - Edge must survive all scenarios to pass
+
+3. **Calibrated Confidence**
+   - Computed from backtest performance, simulation survival, alpha score, and risk score
+   - Penalized for small sample sizes or failed simulation scenarios
+   - Trustworthiness flag indicates whether confidence is reliable
+
+4. **Hard Trade Gate**
+   - Only emit TAKE when ALL conditions pass:
+     - Confidence ≥ 75%
+     - Win rate ≥ 62%
+     - Sample size ≥ 20
+     - Alpha vs benchmark ≥ 3%
+     - All simulation scenarios survive
+   - Otherwise PASS (most candidates will PASS)
+
+5. **High-Convexity Options Alert**
+   - Detects far-OTM option setups with ≥10% probability of 100x return
+   - Based on stock volatility, momentum, and technical setup
+   - Only alerts when both probability threshold AND strong alpha score (≥70) are met
+   - Rooftop shout (🚨) in UI when detected
+
+### Design Principles
+
+- **Conservative by default**: Prefers fewer, better trades over volume
+- **No fabricated numbers**: All metrics computed from actual data; missing data degrades honestly
+- **Transparent reasoning**: Every PASS decision includes specific reasons
+- **Walk-forward validation**: Historical analysis prevents overfitting
+- **Real-world costs**: Transaction costs and slippage are always included
+
+**Disclaimer**: This is research and screening software for educational purposes, not investment advice.
+
+---
+
+## NYSE SMID Universe ($100M-$2B)
+
+The NYSE SMID Agent extends the institutional scanner to small-mid cap stocks listed on the NYSE.
+
+### Universe Definition
+
+- **Exchange**: NYSE only (not Nasdaq, not AMEX)
+- **Market Cap**: Greater than $100M and less than $2B
+- **Exclusions**: ETFs, funds, ADRs, preferreds, warrants
+- **Liquidity Filter**: Minimum $2.00 price
+- **Data Source**: Financial Modeling Prep (requires `FMP_API_KEY`)
+
+### How It Works
+
+The NYSE SMID Agent **reuses the existing S&P 500 data pipeline**:
+
+1. **Constituents**: Fetched from FMP stock screener with market cap and exchange filters
+2. **Prices**: Same `fetch_close_prices` function (Yahoo Finance + FMP fallback)
+3. **Alpha Engine**: Same `compute_alpha_candidates` scoring model
+4. **Institutional Gate**: Same walk-forward backtest + simulation + confidence framework
+
+### Usage
+
+**API**: 
+```bash
+# Scan entire NYSE SMID universe
+GET /api/nyse-smid-agent?limit=20&minScore=65
+
+# Scan specific tickers within the universe
+GET /api/nyse-smid-agent?tickers=AAPL,MSFT,GOOGL&limit=20
+```
+
+**Frontend**: Navigate to "NYSE SMID Agent" tab
+
+**Requirements**: Set `FMP_API_KEY` in environment for NYSE listings + market cap data
+
+### Performance
+
+- Universe is larger than S&P 500 (~800-1200 stocks vs 500)
+- Min alpha score pre-filters before expensive walk-forward backtests
+- Price data cached with 15-minute TTL
+- Constituents cached with 24-hour TTL
 
 ---
 

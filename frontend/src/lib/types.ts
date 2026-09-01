@@ -561,3 +561,129 @@ export type AgentBotRunResponse = {
     [key: string]: unknown;
   };
 };
+
+export type InstitutionalBacktest = {
+  winRate: number | null;
+  avgReturn: number | null;
+  medianReturn: number | null;
+  benchmarkAvgReturn: number | null;
+  alphaAvgReturn: number | null;
+  maxDrawdown: number | null;
+  sampleSize: number;
+  valid: boolean;
+};
+
+export type InstitutionalSimulationScenario = {
+  winRate: number;
+  avgReturn: number;
+  survives: boolean;
+};
+
+export type InstitutionalSimulation = {
+  scenarios: Record<string, InstitutionalSimulationScenario>;
+  allScenariosSurvive: boolean;
+};
+
+export type InstitutionalConfidence = {
+  confidence: number;
+  sampleSize: number;
+  trustworthy: boolean;
+  reason: string;
+};
+
+export type InstitutionalTradeGate = {
+  decision: "TAKE" | "PASS";
+  reasons: string[];
+  gateConditions: {
+    confidence: boolean;
+    winRate: boolean;
+    sampleSize: boolean;
+    alphaVsBenchmark: boolean;
+    simulationSurvival: boolean;
+  };
+};
+
+export type InstitutionalConvexityAlert = {
+  ticker: string;
+  type: string;
+  probability: number;
+  expectedReturn: string;
+  requiredStockMove: number;
+  currentPrice: number;
+  volatility: number;
+  alphaScore: number;
+  message: string;
+};
+
+export type InstitutionalCandidate = {
+  rank: number;
+  ticker: string;
+  companyName: string;
+  sector: string;
+  currentPrice: number;
+  priceDate: string;
+  alphaScore: number;
+  technicalScore: number;
+  riskAdjustedScore: number;
+  expectedReturn20d: number;
+  momentum20d: number;
+  momentum63d: number;
+  rsVsSpy20d: number;
+  rsVsSector20d: number;
+  sectorStrength20d: number;
+  volatility20d: number;
+  betaVsSpy: number;
+  maxDrawdown63d: number;
+  trendState: string;
+  factorExposure: string;
+  regimeFit: string;
+  tradePlan: AlphaTradePlan;
+  signals: AlphaSignal[];
+  backtests: AlphaBacktestMetric[];
+  backtest: InstitutionalBacktest;
+  simulation: InstitutionalSimulation;
+  confidence: InstitutionalConfidence;
+  tradeGate: InstitutionalTradeGate;
+  convexityAlert: InstitutionalConvexityAlert | null;
+};
+
+export type InstitutionalScannerResponse = {
+  asOf: string;
+  marketRegime: {
+    state: string;
+    spyTrend: string;
+    spyDrawdownPct: number | null;
+    effectiveState: string;
+    riskMode: string;
+  };
+  candidates: InstitutionalCandidate[];
+  convexityAlerts: InstitutionalConvexityAlert[];
+  meta: {
+    total: number;
+    eligible: number;
+    computed: number;
+    returned: number;
+    skipped: number;
+    priceCoveragePct: number;
+    minScore: number;
+    sector: string | null;
+    maxBeta: number | null;
+    signals: string[];
+    warnings: string[];
+    scannerVersion: string;
+    status: string;
+    backtestHorizon: string;
+    simulationScenarios: string[];
+    tradeGate: {
+      minConfidence: number;
+      minWinRate: number;
+      minSampleSize: number;
+      minAlphaVsBenchmark: number;
+    };
+    convexityAlert: {
+      minProbability: number;
+      minReturn: string;
+    };
+    [key: string]: unknown;
+  };
+};
