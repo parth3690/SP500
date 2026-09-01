@@ -55,7 +55,8 @@ def test_nyse_smid_agent_universe_filter():
         },
     ]
     
-    with patch("backend.app.services.sp500._fetch_nyse_smid_from_fmp") as mock_fetch:
+    with patch.dict(os.environ, {"FMP_API_KEY": "test_key"}), \
+         patch("backend.app.services.sp500._fetch_nyse_smid_from_fmp") as mock_fetch:
         mock_fetch.return_value = [
             Constituent(
                 ticker=item["symbol"],
@@ -250,10 +251,35 @@ def test_nyse_smid_gate_unchanged():
     )
     
     with patch("backend.app.services.nyse_smid_agent.get_nyse_smid_constituents_cached") as mock_get_constituents, \
-         patch("backend.app.services.nyse_smid_agent.fetch_close_prices") as mock_fetch_prices:
+         patch("backend.app.services.nyse_smid_agent.fetch_close_prices") as mock_fetch_prices, \
+         patch("backend.app.services.nyse_smid_agent.compute_alpha_candidates") as mock_compute:
         
         mock_get_constituents.return_value = mock_constituents
         mock_fetch_prices.return_value = mock_prices
+        
+        # Mock at least one candidate so the gate logic runs
+        mock_compute.return_value = {
+            "candidates": [
+                {
+                    "ticker": "STRONG",
+                    "companyName": "Strong Corp",
+                    "sector": "Technology",
+                    "currentPrice": 100.0,
+                    "alphaScore": 75.0,
+                    "riskScore": 55.0,
+                    "expectedReturn20d": 5.0,
+                    "volatility20d": 15.0,
+                }
+            ],
+            "marketRegime": {
+                "state": "neutral",
+                "spyTrend": "neutral",
+                "spyDrawdownPct": 0.0,
+                "effectiveState": "neutral",
+                "riskMode": "balanced",
+            },
+            "meta": {"total": 1, "eligible": 1, "computed": 1, "returned": 1},
+        }
         
         result = run_nyse_smid_agent(limit=20)
         
