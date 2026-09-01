@@ -982,6 +982,7 @@ async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResp
 
 @app.get("/api/institutional-scanner", response_model=InstitutionalScannerResponse)
 async def institutional_scanner(
+    universe: str = Query("sp500", pattern="^(sp500|nyse_smid)$", description="Universe: sp500 or nyse_smid ($100M-$2B)"),
     limit: int = Query(20, ge=5, le=50, description="Maximum number of candidates to return"),
     min_score: float = Query(65.0, ge=0.0, le=100.0, alias="minScore", description="Minimum alpha score threshold"),
     sector: Optional[str] = Query(None, description="Filter by sector"),
@@ -991,16 +992,23 @@ async def institutional_scanner(
     refresh: bool = Query(False),
 ) -> InstitutionalScannerResponse:
     """
-    Institutional-grade S&P 500 trade scanner.
+    Institutional-grade trade scanner.
     
-    Scans S&P 500, runs walk-forward backtests, validates under simulation scenarios,
+    Supports two universes:
+    - sp500: S&P 500 stocks (default)
+    - nyse_smid: NYSE-listed common stocks with $100M-$2B market cap
+    
+    Runs walk-forward backtests, validates under simulation scenarios,
     computes calibrated confidence estimates, applies hard trade gate (TAKE/PASS),
-    and detects high-convexity option opportunities (10% chance of 100x).
+    and detects high-convexity option opportunities (when data available).
     """
+    from .services.sp500 import get_nyse_smid_constituents_cached
+    
     sector_value = sector.strip() if sector and sector.strip() else None
     cache_key = (
         "institutional_scanner",
         INSTITUTIONAL_SCANNER_VERSION,
+        universe,
         limit,
         round(min_score, 2),
         sector_value,
@@ -1014,12 +1022,25 @@ async def institutional_scanner(
         if cached is not None:
             return InstitutionalScannerResponse(**cached)
 
-    constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+    # Load constituents based on universe
+    if universe == "nyse_smid":
+        constituents_list = await run_in_threadpool(get_nyse_smid_constituents_cached, refresh=refresh)
+        if not constituents_list:
+            # No FMP API key or failed to fetch
+            raise HTTPException(
+                status_code=503,
+                detail="NYSE SMID universe requires FMP_API_KEY. Set the key in environment to enable this feature.",
+            )
+        universe_name = "NYSE SMID ($100M-$2B)"
+    else:  # sp500
+        constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+        universe_name = "S&P 500"
+    
     end_date = date.today()
     start_date = end_date - timedelta(days=760)
     
-    # Use shared price cache with alpha scanner
-    price_key = ("institutional_prices", start_date.isoformat(), end_date.isoformat())
+    # Use shared price cache
+    price_key = ("institutional_prices", universe, start_date.isoformat(), end_date.isoformat())
     close_prices = None if refresh else cache_get(INSTITUTIONAL_SCANNER_CACHE, price_key)
     fetched_prices = close_prices is None
     
@@ -1030,7 +1051,7 @@ async def institutional_scanner(
     coverage = _require_price_coverage(
         close_prices,
         [c.yahooTicker for c in constituents_list],
-        minimum_pct=90.0,
+        minimum_pct=85.0 if universe == "nyse_smid" else 90.0,  # Lower threshold for SMID
         min_rows=260,  # Need 260 days for walk-forward backtest
     )
     
@@ -1055,7 +1076,69 @@ async def institutional_scanner(
         regime_override=regime,
     )
     
-    payload["meta"] = {**payload["meta"], **coverage}
+    payload["meta"] = {
+        **payload["meta"],
+        **coverage,
+        "universe": universe_name,
+        "universeType": universe,
+    }
+    
+    if payload.get("meta", {}).get("status") == "complete":
+        cache_set(INSTITUTIONAL_SCANNER_CACHE, cache_key, payload)
+    
+    return InstitutionalScannerResponse(**payload)
+
+
+@app.get("/api/nyse-smid-agent", response_model=InstitutionalScannerResponse)
+async def nyse_smid_agent(
+    tickers: Optional[str] = Query(None, description="Comma-separated ticker list (optional)"),
+    limit: int = Query(20, ge=5, le=50, description="Maximum number of candidates to return"),
+    min_score: float = Query(65.0, ge=0.0, le=100.0, alias="minScore", description="Minimum alpha score threshold"),
+    risk_mode: str = Query("balanced", pattern="^(balanced|aggressive|defensive)$", alias="riskMode"),
+    regime: str = Query("auto", pattern="^(auto|risk_on|neutral|risk_off)$"),
+    refresh: bool = Query(False),
+) -> InstitutionalScannerResponse:
+    """
+    NYSE SMID Agent - Institutional scanner for small-mid cap NYSE stocks ($100M-$2B).
+    
+    Reuses the existing S&P 500 data pipeline to scan individual stocks:
+    - NYSE listings from FMP
+    - Prices from shared fetch_close_prices
+    - Alpha engine (compute_alpha_candidates)
+    - Institutional gate (backtest + simulation + confidence)
+    
+    Returns TAKE/PASS book with the same conservative gate as S&P 500 scanner.
+    """
+    from .services.nyse_smid_agent import run_nyse_smid_agent
+    
+    # Parse tickers if provided
+    ticker_list: list[str] | None = None
+    if tickers:
+        ticker_list = [t.strip() for t in tickers.split(",") if t.strip()]
+    
+    cache_key = (
+        "nyse_smid_agent",
+        tuple(ticker_list) if ticker_list else None,
+        limit,
+        round(min_score, 2),
+        risk_mode,
+        regime,
+    )
+    
+    if not refresh:
+        cached = cache_get(INSTITUTIONAL_SCANNER_CACHE, cache_key)
+        if cached is not None:
+            return InstitutionalScannerResponse(**cached)
+    
+    payload = await run_in_threadpool(
+        run_nyse_smid_agent,
+        ticker_list,
+        limit=limit,
+        min_score=min_score,
+        risk_mode=risk_mode,
+        regime=regime,
+        refresh=refresh,
+    )
     
     if payload.get("meta", {}).get("status") == "complete":
         cache_set(INSTITUTIONAL_SCANNER_CACHE, cache_key, payload)

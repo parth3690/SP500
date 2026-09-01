@@ -251,6 +251,51 @@ The Institutional Scanner is designed to behave like a top-tier quantitative ana
 
 ---
 
+## NYSE SMID Universe ($100M-$2B)
+
+The NYSE SMID Agent extends the institutional scanner to small-mid cap stocks listed on the NYSE.
+
+### Universe Definition
+
+- **Exchange**: NYSE only (not Nasdaq, not AMEX)
+- **Market Cap**: Greater than $100M and less than $2B
+- **Exclusions**: ETFs, funds, ADRs, preferreds, warrants
+- **Liquidity Filter**: Minimum $2.00 price
+- **Data Source**: Financial Modeling Prep (requires `FMP_API_KEY`)
+
+### How It Works
+
+The NYSE SMID Agent **reuses the existing S&P 500 data pipeline**:
+
+1. **Constituents**: Fetched from FMP stock screener with market cap and exchange filters
+2. **Prices**: Same `fetch_close_prices` function (Yahoo Finance + FMP fallback)
+3. **Alpha Engine**: Same `compute_alpha_candidates` scoring model
+4. **Institutional Gate**: Same walk-forward backtest + simulation + confidence framework
+
+### Usage
+
+**API**: 
+```bash
+# Scan entire NYSE SMID universe
+GET /api/nyse-smid-agent?limit=20&minScore=65
+
+# Scan specific tickers within the universe
+GET /api/nyse-smid-agent?tickers=AAPL,MSFT,GOOGL&limit=20
+```
+
+**Frontend**: Navigate to "NYSE SMID Agent" tab
+
+**Requirements**: Set `FMP_API_KEY` in environment for NYSE listings + market cap data
+
+### Performance
+
+- Universe is larger than S&P 500 (~800-1200 stocks vs 500)
+- Min alpha score pre-filters before expensive walk-forward backtests
+- Price data cached with 15-minute TTL
+- Constituents cached with 24-hour TTL
+
+---
+
 ## How Data & Signals Work
 
 - **Constituents**: Scraped from Wikipedia's "List of S&P 500 companies"

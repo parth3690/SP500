@@ -10,12 +10,14 @@ const MultibaggerScanner = dynamic(() => import("@/components/MultibaggerScanner
 const AlphaCandidates = dynamic(() => import("@/components/AlphaCandidates"), { ssr: false });
 const AgentBot = dynamic(() => import("@/components/AgentBot"), { ssr: false });
 const InstitutionalScanner = dynamic(() => import("@/components/InstitutionalScanner"), { ssr: false });
+const NyseSmidAgent = dynamic(() => import("@/components/NyseSmidAgent"), { ssr: false });
 
-type AppTab = "agent" | "institutional" | "alpha" | "sp500" | "indicators" | "multibagger";
+type AppTab = "agent" | "institutional" | "nyse_smid" | "alpha" | "sp500" | "indicators" | "multibagger";
 
 const TABS: { id: AppTab; label: string }[] = [
   { id: "agent", label: "Agent Bot" },
   { id: "institutional", label: "Institutional Scanner" },
+  { id: "nyse_smid", label: "NYSE SMID Agent" },
   { id: "alpha", label: "Alpha Candidates" },
   { id: "sp500", label: "S&P 500 Dashboard" },
   { id: "indicators", label: "Market Indicators" },
@@ -49,6 +51,7 @@ export default function Page() {
 
       {tab === "agent" ? <AgentBot /> : null}
       {tab === "institutional" ? <InstitutionalScanner /> : null}
+      {tab === "nyse_smid" ? <NyseSmidAgent /> : null}
       {tab === "alpha" ? <AlphaCandidates /> : null}
       {tab === "sp500" ? <Dashboard /> : null}
       {tab === "indicators" ? <MarketIndicators /> : null}
