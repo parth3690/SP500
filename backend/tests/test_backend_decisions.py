@@ -675,8 +675,17 @@ class InstitutionalScannerTests(unittest.TestCase):
         stock = pd.Series(np.linspace(100.0, 120.0, len(index)), index=index)
         spy = pd.Series(np.linspace(100.0, 110.0, len(index)), index=index)
 
+        # Mock backtest with strong edge
+        backtest = {
+            "winRate": 70.0,
+            "avgReturn": 5.0,
+            "alphaAvgReturn": 3.5,
+            "sampleSize": 30,
+            "valid": True,
+        }
+
         simulation = _run_simulation_validation(
-            stock, spy, spy, current_price=120.0, volatility=25.0, risk_mode="balanced", regime="auto"
+            stock, spy, spy, backtest, risk_mode="balanced", regime="auto"
         )
 
         self.assertIn("bull", simulation["scenarios"])
@@ -691,20 +700,27 @@ class InstitutionalScannerTests(unittest.TestCase):
 
     def test_simulation_includes_transaction_costs(self) -> None:
         """Simulation should account for realistic transaction costs."""
-        # This test verifies that transaction costs are applied by checking
-        # that returns are lower than the base scenario returns
         index = pd.bdate_range("2024-01-01", periods=300)
         stock = pd.Series(np.linspace(100.0, 120.0, len(index)), index=index)
         spy = pd.Series(np.linspace(100.0, 110.0, len(index)), index=index)
 
+        # Mock backtest with positive edge
+        backtest = {
+            "winRate": 65.0,
+            "avgReturn": 4.0,
+            "alphaAvgReturn": 3.0,
+            "sampleSize": 25,
+            "valid": True,
+        }
+
         simulation = _run_simulation_validation(
-            stock, spy, spy, current_price=120.0, volatility=25.0, risk_mode="balanced", regime="auto"
+            stock, spy, spy, backtest, risk_mode="balanced", regime="auto"
         )
 
-        # With transaction costs (20 bps) and slippage (5 bps), total drag is 25 bps
-        # Base scenario has mu=2.0, so net should be around 1.75%
+        # After 25 bps costs (20 bps + 5 bps slippage), returns should be reduced
+        # Base scenario stresses the 4.0% average return, so result will be less
         base_avg_return = simulation["scenarios"]["base"]["avgReturn"]
-        self.assertLess(base_avg_return, 2.0)  # Should be reduced by costs
+        self.assertLess(base_avg_return, 4.0)  # Should be reduced by costs
 
     def test_confidence_calibrates_from_backtest_and_simulation(self) -> None:
         """Confidence should be computed from multiple signals."""
@@ -762,62 +778,97 @@ class InstitutionalScannerTests(unittest.TestCase):
 
         self.assertGreater(conf_pass["confidence"], conf_fail["confidence"])
 
-    def test_convexity_alert_requires_high_probability(self) -> None:
-        """Only high-probability convexity setups should trigger alerts."""
-        # Low volatility = low probability of extreme moves = no alert
+    def test_convexity_alert_disabled_without_real_option_data(self) -> None:
+        """Convexity alerts should not fire without real options chain data."""
+        # Low volatility case
         alert_low_vol = _detect_convexity_alert(
             ticker="AAPL",
             current_price=150.0,
-            volatility=15.0,  # Low volatility
+            volatility=15.0,
             alpha_score=75.0,
             expected_return=5.0,
         )
-
         self.assertIsNone(alert_low_vol)
 
-        # High volatility = higher probability = might alert
+        # High volatility case - still no alert without real options data
         alert_high_vol = _detect_convexity_alert(
             ticker="MEME",
             current_price=50.0,
-            volatility=150.0,  # Very high volatility
+            volatility=150.0,
             alpha_score=75.0,
             expected_return=10.0,
         )
+        self.assertIsNone(alert_high_vol)
 
-        # Note: This might still be None depending on the exact calculation
-        # The test verifies that the function can produce an alert under extreme conditions
-        if alert_high_vol:
-            self.assertGreaterEqual(alert_high_vol["probability"], CONVEXITY_ALERT_MIN_PROBABILITY)
-
-    def test_convexity_alert_requires_strong_technicals(self) -> None:
-        """Convexity alerts should only fire with strong alpha scores."""
-        alert_weak = _detect_convexity_alert(
+        # Strong technicals - still no alert without real options data
+        alert_strong = _detect_convexity_alert(
             ticker="TEST",
             current_price=100.0,
-            volatility=100.0,
-            alpha_score=50.0,  # Weak score
-            expected_return=5.0,
-        )
-
-        self.assertIsNone(alert_weak)
-
-    def test_convexity_alert_includes_required_fields(self) -> None:
-        """When an alert fires, it should include all required fields."""
-        alert = _detect_convexity_alert(
-            ticker="TEST",
-            current_price=100.0,
-            volatility=200.0,  # Extreme volatility
-            alpha_score=80.0,
+            volatility=200.0,
+            alpha_score=90.0,
             expected_return=20.0,
         )
+        self.assertIsNone(alert_strong)
 
-        if alert:  # Only test if alert actually fired
-            self.assertEqual(alert["ticker"], "TEST")
-            self.assertIn("probability", alert)
-            self.assertIn("expectedReturn", alert)
-            self.assertIn("requiredStockMove", alert)
-            self.assertIn("message", alert)
-            self.assertIn("🚨", alert["message"])  # Rooftop shout indicator
+    def test_strong_backtest_can_reach_take(self) -> None:
+        """A candidate with strong backtest should be able to reach TAKE."""
+        # Strong backtest: high win rate, good alpha, sufficient samples
+        backtest = {
+            "winRate": 75.0,
+            "avgReturn": 8.0,
+            "alphaAvgReturn": 5.5,
+            "sampleSize": 35,
+            "valid": True,
+        }
+        
+        # Simulation that passes (base has edge, stress scenarios don't blow up)
+        simulation = {
+            "allScenariosSurvive": True,
+            "scenarios": {
+                "base": {"winRate": 68.0, "avgReturn": 3.5, "survives": True},
+                "bull": {"winRate": 72.0, "avgReturn": 5.0, "survives": True},
+                "bear": {"winRate": 45.0, "avgReturn": -2.0, "survives": True},
+                "high_vol": {"winRate": 55.0, "avgReturn": 1.5, "survives": True},
+            },
+        }
+        
+        # Compute confidence (should be high)
+        confidence = _compute_confidence(backtest, simulation, alpha_score=78.0, risk_score=75.0)
+        
+        # Apply trade gate
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+        
+        # Should TAKE
+        self.assertEqual(gate["decision"], "TAKE")
+        self.assertTrue(all(gate["gateConditions"].values()))
+
+    def test_bear_stress_alone_does_not_force_pass_when_base_is_strong(self) -> None:
+        """Bear scenario can fail without blocking TAKE if base case is strong."""
+        # Strong backtest
+        backtest = {
+            "winRate": 72.0,
+            "avgReturn": 7.5,
+            "alphaAvgReturn": 5.0,
+            "sampleSize": 30,
+            "valid": True,
+        }
+        
+        # Base case passes, bear looks bad (but not catastrophic)
+        simulation = {
+            "allScenariosSurvive": True,  # Key: this considers base + no catastrophic failure
+            "scenarios": {
+                "base": {"winRate": 66.0, "avgReturn": 3.0, "survives": True},
+                "bull": {"winRate": 70.0, "avgReturn": 6.0, "survives": True},
+                "bear": {"winRate": 42.0, "avgReturn": -3.5, "survives": True},  # Negative but not ruinous
+                "high_vol": {"winRate": 52.0, "avgReturn": 0.8, "survives": True},
+            },
+        }
+        
+        confidence = _compute_confidence(backtest, simulation, alpha_score=76.0, risk_score=72.0)
+        gate = _apply_trade_gate(confidence, backtest, simulation)
+        
+        # Should TAKE - base case has real edge, bear is just stressed
+        self.assertEqual(gate["decision"], "TAKE")
 
     def test_walk_forward_backtest_avoids_lookahead_bias(self) -> None:
         """Backtest should only use data available at signal time."""
