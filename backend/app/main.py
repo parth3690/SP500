@@ -30,11 +30,12 @@ from .models import (
     AlphaWatchlistRequest,
     AgentBotRunRequest,
     AgentBotRunResponse,
+    InstitutionalScannerResponse,
 )
 from .services.cache import (
     MOVERS_CACHE, CROSSOVERS_CACHE, RESEARCH_CACHE, RSI_SCAN_CACHE, WEEKLY_MA_SCAN_CACHE,
     MOVE_FINDER_CACHE, MULTIBAGGER_CACHE, MARKET_CONDITIONS_CACHE,
-    ALPHA_CACHE,
+    ALPHA_CACHE, INSTITUTIONAL_SCANNER_CACHE,
     cache_get, cache_set, price_cache_get, price_cache_set,
     clear_research_and_price_caches,
 )
@@ -60,6 +61,7 @@ from .services.sp500 import (
 from .services.multibagger import scan_ticker
 from .services.market_conditions import fetch_all_market_conditions
 from .services.alpha import ALPHA_CACHE_VERSION, alpha_universe_tickers, compute_alpha_candidates
+from .services.institutional_scanner import INSTITUTIONAL_SCANNER_VERSION, scan_institutional_grade
 from .services.agent_bot import run_agent_bot
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
@@ -976,6 +978,89 @@ async def alpha_watchlist(request: AlphaWatchlistRequest) -> AlphaCandidatesResp
     if payload.get("meta", {}).get("status") == "complete":
         cache_set(ALPHA_CACHE, cache_key, payload)
     return AlphaCandidatesResponse(**payload)
+
+
+@app.get("/api/institutional-scanner", response_model=InstitutionalScannerResponse)
+async def institutional_scanner(
+    limit: int = Query(20, ge=5, le=50, description="Maximum number of candidates to return"),
+    min_score: float = Query(65.0, ge=0.0, le=100.0, alias="minScore", description="Minimum alpha score threshold"),
+    sector: Optional[str] = Query(None, description="Filter by sector"),
+    max_beta: Optional[float] = Query(None, ge=0.1, le=5.0, alias="maxBeta", description="Maximum beta threshold"),
+    risk_mode: str = Query("balanced", pattern="^(balanced|aggressive|defensive)$", alias="riskMode"),
+    regime: str = Query("auto", pattern="^(auto|risk_on|neutral|risk_off)$"),
+    refresh: bool = Query(False),
+) -> InstitutionalScannerResponse:
+    """
+    Institutional-grade S&P 500 trade scanner.
+    
+    Scans S&P 500, runs walk-forward backtests, validates under simulation scenarios,
+    computes calibrated confidence estimates, applies hard trade gate (TAKE/PASS),
+    and detects high-convexity option opportunities (10% chance of 100x).
+    """
+    sector_value = sector.strip() if sector and sector.strip() else None
+    cache_key = (
+        "institutional_scanner",
+        INSTITUTIONAL_SCANNER_VERSION,
+        limit,
+        round(min_score, 2),
+        sector_value,
+        round(max_beta, 2) if max_beta is not None else None,
+        risk_mode,
+        regime,
+    )
+    
+    if not refresh:
+        cached = cache_get(INSTITUTIONAL_SCANNER_CACHE, cache_key)
+        if cached is not None:
+            return InstitutionalScannerResponse(**cached)
+
+    constituents_list = await run_in_threadpool(get_sp500_constituents_cached, refresh=False)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=760)
+    
+    # Use shared price cache with alpha scanner
+    price_key = ("institutional_prices", start_date.isoformat(), end_date.isoformat())
+    close_prices = None if refresh else cache_get(INSTITUTIONAL_SCANNER_CACHE, price_key)
+    fetched_prices = close_prices is None
+    
+    if close_prices is None:
+        tickers = alpha_universe_tickers(constituents_list)
+        close_prices = await run_in_threadpool(fetch_close_prices, tickers, start_date, end_date)
+
+    coverage = _require_price_coverage(
+        close_prices,
+        [c.yahooTicker for c in constituents_list],
+        minimum_pct=90.0,
+        min_rows=260,  # Need 260 days for walk-forward backtest
+    )
+    
+    if "SPY" not in getattr(close_prices, "columns", []):
+        raise HTTPException(
+            status_code=503,
+            detail="SPY benchmark history is unavailable, so institutional scanner was withheld.",
+        )
+    
+    if fetched_prices:
+        cache_set(INSTITUTIONAL_SCANNER_CACHE, price_key, close_prices)
+
+    payload = await run_in_threadpool(
+        scan_institutional_grade,
+        constituents_list,
+        close_prices,
+        limit=limit,
+        min_score=min_score,
+        sector=sector_value,
+        max_beta=max_beta,
+        risk_mode=risk_mode,
+        regime_override=regime,
+    )
+    
+    payload["meta"] = {**payload["meta"], **coverage}
+    
+    if payload.get("meta", {}).get("status") == "complete":
+        cache_set(INSTITUTIONAL_SCANNER_CACHE, cache_key, payload)
+    
+    return InstitutionalScannerResponse(**payload)
 
 
 @app.post("/api/agent-bot/run", response_model=AgentBotRunResponse)

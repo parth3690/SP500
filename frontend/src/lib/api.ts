@@ -1,4 +1,4 @@
-import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, WeeklyMaWatchResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse, AgentBotRunResponse } from "@/lib/types";
+import type { MoversResponse, CrossoversResponse, OversoldResponse, OverboughtResponse, WeeklyMaWatchResponse, ResearchData, MultibaggerResponse, MarketConditionsFetchResponse, AlphaCandidatesResponse, AgentBotRunResponse, InstitutionalScannerResponse } from "@/lib/types";
 
 const DEFAULT_BASE_URL = "http://localhost:8000";
 
@@ -267,4 +267,26 @@ export async function fetchAgentBotRun(params: {
     refresh: params.refresh === true,
   });
   return parseJson<AgentBotRunResponse>(text, 200);
+}
+
+export async function fetchInstitutionalScanner(params: {
+  limit?: number;
+  minScore?: number;
+  sector?: string;
+  maxBeta?: number;
+  riskMode?: "balanced" | "aggressive" | "defensive";
+  regime?: "auto" | "risk_on" | "neutral" | "risk_off";
+  refresh?: boolean;
+}): Promise<InstitutionalScannerResponse> {
+  const base = apiBaseUrl();
+  const url = new URL(`${base}/api/institutional-scanner`);
+  if (params.limit) url.searchParams.set("limit", String(params.limit));
+  if (params.minScore !== undefined) url.searchParams.set("minScore", String(params.minScore));
+  if (params.sector) url.searchParams.set("sector", params.sector);
+  if (params.maxBeta) url.searchParams.set("maxBeta", String(params.maxBeta));
+  if (params.riskMode) url.searchParams.set("riskMode", params.riskMode);
+  if (params.regime) url.searchParams.set("regime", params.regime);
+  if (params.refresh === true) url.searchParams.set("refresh", "true");
+  const text = await fetchApi(url.toString());
+  return parseJson<InstitutionalScannerResponse>(text, 200);
 }
