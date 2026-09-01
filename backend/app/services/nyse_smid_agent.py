@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 
 from ..models import Constituent
-from .alpha import alpha_universe_tickers, compute_alpha_candidates
+from .alpha import SECTOR_ETFS, alpha_universe_tickers, compute_alpha_candidates
 from .cache import INSTITUTIONAL_SCANNER_CACHE, cache_get, cache_set
 from .institutional_scanner import (
     INSTITUTIONAL_SCANNER_VERSION,
@@ -27,7 +27,7 @@ from .institutional_scanner import (
     _run_walk_forward_backtest,
 )
 from .prices import fetch_close_prices
-from .sp500 import SECTOR_ETFS, get_nyse_smid_constituents_cached, normalize_user_ticker
+from .sp500 import get_nyse_smid_constituents_cached, normalize_user_ticker
 
 
 def run_nyse_smid_agent(

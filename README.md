@@ -279,8 +279,8 @@ The NYSE SMID Agent **reuses the existing S&P 500 data pipeline**:
 # Scan entire NYSE SMID universe
 GET /api/nyse-smid-agent?limit=20&minScore=65
 
-# Scan specific tickers within the universe
-GET /api/nyse-smid-agent?tickers=AAPL,MSFT,GOOGL&limit=20
+# Scan specific tickers within the universe (example: $100M-$2B market cap NYSE stocks)
+GET /api/nyse-smid-agent?tickers=TICKER1,TICKER2,TICKER3&limit=20
 ```
 
 **Frontend**: Navigate to "NYSE SMID Agent" tab

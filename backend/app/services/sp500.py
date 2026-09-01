@@ -140,16 +140,16 @@ def _fetch_nyse_smid_from_fmp(
     min_price: float,
     min_dollar_volume: float,
 ) -> list[Constituent]:
-    """Fetch NYSE SMID stocks using FMP stock screener."""
+    """Fetch NYSE SMID stocks using FMP company screener."""
     import os
     
     api_key = os.getenv("FMP_API_KEY", "").strip()
     base = os.getenv("FMP_API_BASE", "https://financialmodelingprep.com/stable").rstrip("/")
     
     try:
-        # FMP stock screener endpoint
+        # FMP company screener endpoint (working endpoint, not stock-screener which returns 404)
         resp = httpx.get(
-            f"{base}/stock-screener",
+            f"{base}/company-screener",
             params={
                 "exchange": "NYSE",
                 "limit": 5000,
@@ -160,7 +160,7 @@ def _fetch_nyse_smid_from_fmp(
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        print(f"[NYSE SMID] FMP stock screener failed: {e}")
+        print(f"[NYSE SMID] FMP company screener failed: {e}")
         return []
     
     if not isinstance(data, list):
@@ -209,12 +209,24 @@ def _fetch_nyse_smid_from_fmp(
         if any(suffix in ticker for suffix in ["-P", ".P", "-W", ".W"]):
             continue
         
+        # Check FMP instrument type fields if available
+        is_etf = row.get("isEtf")
+        is_fund = row.get("isFund")
+        is_actively_trading = row.get("isActivelyTrading")
+        
+        if is_etf is True or is_fund is True:
+            continue
+        
+        if is_actively_trading is False:
+            continue
+        
         company_name = row.get("companyName", ticker)
         
-        # Exclude common fund/ETF patterns in name
+        # Exclude common fund/ETF patterns in name (tightened filter)
         name_lower = company_name.lower()
         if any(keyword in name_lower for keyword in [
-            "etf", "fund", "trust", "adr", "depositary", "preferred", "warrant"
+            "etf", "fund", "trust", "adr", "depositary", "preferred", "warrant",
+            "reit", "closed-end", "close-end", "closed end", "close end"
         ]):
             continue
         
