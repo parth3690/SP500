@@ -453,7 +453,6 @@ class InstitutionalConfidence(BaseModel):
     sampleSize: int
     trustworthy: bool
     reason: str
-    calibrationDetails: Optional[dict[str, Any]] = None
 
 
 class InstitutionalGateDelta(BaseModel):

@@ -284,11 +284,10 @@ def _compute_confidence(
     risk_score: float,
 ) -> dict[str, Any]:
     """
-    Compute calibrated confidence estimate from backtest and simulation results.
-    Returns confidence, sample size, and trustworthiness assessment.
+    Compute confidence estimate from backtest and simulation results.
     
-    CALIBRATION FIX: Previous formula was structurally too low. Adjusted weighting
-    to allow strong candidates to reach the 75% threshold while maintaining rigor.
+    Uses the ORIGINAL formula (reverted from hand-tuned rescaling).
+    Empirical calibration is applied separately via _apply_empirical_calibration.
     """
     if not backtest["valid"]:
         return {
@@ -296,49 +295,28 @@ def _compute_confidence(
             "sampleSize": 0,
             "trustworthy": False,
             "reason": "Insufficient historical samples for backtest.",
-            "calibrationDetails": {
-                "baseConfidence": 0.0,
-                "samplePenalty": 0.0,
-                "simulationMultiplier": 1.0,
-                "riskAdjustment": 0.0,
-            },
         }
 
     sample_size = backtest["sampleSize"]
     win_rate = backtest["winRate"]
     alpha_vs_bench = backtest["alphaAvgReturn"]
 
-    # Base confidence from backtest - RECALIBRATED
-    # Previous: win_rate * 0.50 + clamp(alpha * 5, 0, 50) + alpha_score * 0.30
-    # Problem: Max was ~115 before penalties, but after risk_score * 0.7 and simulation * 0.7, 
-    #          even perfect candidates couldn't reach 75%
-    # Fix: Increase contribution weights and add win rate bonus
-    win_rate_component = win_rate * 0.60  # Up from 0.50 - strong win rates deserve credit
-    alpha_component = _clamp(alpha_vs_bench * 6.0, 0, 35)  # Up from *5 and cap of 50
-    alpha_score_component = alpha_score * 0.40  # Up from 0.30
-    
-    # Bonus for exceptional performance
-    exceptional_bonus = 0.0
-    if win_rate >= 70.0 and alpha_vs_bench >= 4.0:
-        exceptional_bonus = 5.0
-    
-    base_confidence = win_rate_component + alpha_component + alpha_score_component + exceptional_bonus
+    # Base confidence from backtest (ORIGINAL FORMULA)
+    base_confidence = (
+        win_rate * 0.50 + _clamp(alpha_vs_bench * 5.0, 0, 50) + alpha_score * 0.30
+    )
 
-    # Penalize low sample size - but less harshly
-    sample_penalty = 0.0
+    # Penalize low sample size (ORIGINAL)
     if sample_size < MIN_BACKTEST_SAMPLE_SIZE:
-        sample_penalty = (MIN_BACKTEST_SAMPLE_SIZE - sample_size) / MIN_BACKTEST_SAMPLE_SIZE * 20  # Down from 30
-        base_confidence -= sample_penalty
+        penalty = (MIN_BACKTEST_SAMPLE_SIZE - sample_size) / MIN_BACKTEST_SAMPLE_SIZE * 30
+        base_confidence -= penalty
 
-    # Penalize if simulation scenarios don't all survive - but less harshly
-    simulation_multiplier = 1.0
+    # Penalize if simulation scenarios don't all survive (ORIGINAL)
     if not simulation["allScenariosSurvive"]:
-        simulation_multiplier = 0.85  # Up from 0.70
-        base_confidence *= simulation_multiplier
+        base_confidence *= 0.70
 
-    # Risk adjustment - but less punitive
-    risk_adjustment = max(0.85, risk_score / 100.0)  # Floor at 0.85 instead of raw risk_score
-    base_confidence = base_confidence * risk_adjustment
+    # Penalize low risk score (ORIGINAL)
+    base_confidence = base_confidence * (risk_score / 100.0)
 
     confidence = _clamp(base_confidence, 0.0, 100.0)
 
@@ -356,12 +334,6 @@ def _compute_confidence(
         "sampleSize": sample_size,
         "trustworthy": trustworthy,
         "reason": reason,
-        "calibrationDetails": {
-            "baseConfidence": round(win_rate_component + alpha_component + alpha_score_component + exceptional_bonus, 1),
-            "samplePenalty": round(sample_penalty, 1),
-            "simulationMultiplier": simulation_multiplier,
-            "riskAdjustment": round(risk_adjustment, 2),
-        },
     }
 
 

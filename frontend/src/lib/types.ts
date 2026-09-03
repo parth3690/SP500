@@ -589,12 +589,6 @@ export type InstitutionalConfidence = {
   sampleSize: number;
   trustworthy: boolean;
   reason: string;
-  calibrationDetails?: {
-    baseConfidence: number;
-    samplePenalty: number;
-    simulationMultiplier: number;
-    riskAdjustment: number;
-  };
 };
 
 export type InstitutionalGateDelta = {
