@@ -46,10 +46,18 @@ def _run_walk_forward_backtest(
     *,
     risk_mode: str,
     regime: str,
+    signal_threshold: float = 68.0,
+    forward_horizon: int = 20,
+    step_size: int = 5,
 ) -> dict[str, Any]:
     """
     Walk-forward backtest with no lookahead bias.
     Returns metrics: win rate, avg return, alpha vs benchmark, max drawdown, sample size.
+    
+    Args:
+        signal_threshold: Alpha score threshold for BUY signals (default 68.0)
+        forward_horizon: Days to measure forward returns (default 20)
+        step_size: Days between walk-forward steps (default 5)
     """
     close = close.dropna()
     spy = spy.dropna()
@@ -77,10 +85,9 @@ def _run_walk_forward_backtest(
     spy_ret = market.pct_change()
 
     samples: list[tuple[float, float]] = []  # (stock_return, spy_return)
-    forward_horizon = 20  # 20-day forward returns
 
     # Walk forward: use data up to idx to generate signal, then measure forward return
-    for idx in range(200, len(stock) - forward_horizon - 1, 5):
+    for idx in range(200, len(stock) - forward_horizon - 1, step_size):
         # Compute alpha score at this point using only historical data
         p = float(stock.iloc[idx])
         sma50 = stock.iloc[: idx + 1].rolling(50).mean().iloc[-1]
@@ -122,8 +129,8 @@ def _run_walk_forward_backtest(
         alpha_score = float(scores["technicalScore"])
         expected_ret = float(scores["expectedReturn20d"])
 
-        # Signal: BUY if alpha_score >= 68 and expected_ret > 0
-        if alpha_score >= 68.0 and expected_ret > 0:
+        # Signal: BUY if alpha_score >= threshold and expected_ret > 0
+        if alpha_score >= signal_threshold and expected_ret > 0:
             # Measure forward return
             stock_fwd = _pct(stock, forward_horizon, idx + forward_horizon)
             spy_fwd = _pct(market, forward_horizon, idx + forward_horizon)
@@ -433,6 +440,9 @@ def scan_institutional_grade(
     max_beta: Optional[float] = None,
     risk_mode: str = "balanced",
     regime_override: str = "auto",
+    signal_threshold: float = 68.0,
+    forward_horizon: int = 20,
+    step_size: int = 5,
 ) -> dict[str, Any]:
     """
     Institutional-grade S&P 500 trade scanner.
@@ -440,6 +450,11 @@ def scan_institutional_grade(
     Scans current data, runs walk-forward backtests, validates under simulation,
     computes calibrated confidence, applies hard trade gate, and detects
     high-convexity option opportunities.
+    
+    Args:
+        signal_threshold: Alpha score threshold for BUY signals in walk-forward (default 68.0)
+        forward_horizon: Days to measure forward returns in backtest (default 20)
+        step_size: Days between walk-forward steps (default 5)
     
     Returns a ranked book of candidates with TAKE/PASS decisions.
     """
@@ -508,6 +523,9 @@ def scan_institutional_grade(
             sector_series,
             risk_mode=risk_mode,
             regime=regime_override,
+            signal_threshold=signal_threshold,
+            forward_horizon=forward_horizon,
+            step_size=step_size,
         )
 
         # Run simulation validation
