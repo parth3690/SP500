@@ -63,6 +63,7 @@ from .services.market_conditions import fetch_all_market_conditions
 from .services.alpha import ALPHA_CACHE_VERSION, alpha_universe_tickers, compute_alpha_candidates
 from .services.institutional_scanner import INSTITUTIONAL_SCANNER_VERSION, scan_institutional_grade
 from .services.agent_bot import run_agent_bot
+from .services.scan_persistence import save_scan_run, list_scan_runs
 
 DEFAULT_RANGE_DAYS = int(os.getenv("DEFAULT_RANGE_DAYS", "30"))
 MAX_RANGE_DAYS = int(os.getenv("MAX_RANGE_DAYS", "366"))
@@ -1085,6 +1086,28 @@ async def institutional_scanner(
     
     if payload.get("meta", {}).get("status") == "complete":
         cache_set(INSTITUTIONAL_SCANNER_CACHE, cache_key, payload)
+        
+        # Persist scan run for audit trail
+        try:
+            scan_inputs = {
+                "universe": universe,
+                "limit": limit,
+                "minScore": min_score,
+                "sector": sector_value,
+                "maxBeta": max_beta,
+                "riskMode": risk_mode,
+                "regime": regime,
+            }
+            run_id = await run_in_threadpool(
+                save_scan_run,
+                f"institutional_{universe}",
+                scan_inputs,
+                payload,
+            )
+            payload["meta"]["runId"] = run_id
+        except Exception as e:
+            # Non-fatal: log but don't fail the scan
+            print(f"[Scan Persistence] Failed to save scan run: {e}")
     
     return InstitutionalScannerResponse(**payload)
 
@@ -1192,6 +1215,19 @@ async def multibagger_scan(
 
     cache_set(MULTIBAGGER_CACHE, cache_key, payload)
     return MultibaggerResponse(**payload)
+
+
+@app.get("/api/institutional-scanner/history")
+async def institutional_scanner_history(
+    scan_type: Optional[str] = Query(None, description="Filter by scan type (e.g., 'institutional_sp500')"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of runs to return"),
+) -> dict[str, Any]:
+    """List recent institutional scanner runs for audit trail."""
+    runs = await run_in_threadpool(list_scan_runs, scan_type=scan_type, limit=limit)
+    return {
+        "runs": runs,
+        "count": len(runs),
+    }
 
 
 @app.get("/api/market-conditions/fetch", response_model=MarketConditionsFetchResponse)

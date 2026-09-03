@@ -453,12 +453,24 @@ class InstitutionalConfidence(BaseModel):
     sampleSize: int
     trustworthy: bool
     reason: str
+    calibrationDetails: Optional[dict[str, Any]] = None
+
+
+class InstitutionalGateDelta(BaseModel):
+    actual: Any
+    required: Any
+    delta: Optional[Any] = None
+    pass_: bool = Field(..., alias="pass")
+    failedScenarios: Optional[list[str]] = None
 
 
 class InstitutionalTradeGate(BaseModel):
     decision: str = Field(..., description="'TAKE' or 'PASS'")
     reasons: list[str]
     gateConditions: dict[str, bool]
+    gateDeltas: dict[str, InstitutionalGateDelta]
+    numFailures: int
+    watchTier: bool = Field(..., description="True if failing on exactly one dimension")
 
 
 class InstitutionalConvexityAlert(BaseModel):

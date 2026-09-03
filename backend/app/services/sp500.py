@@ -33,6 +33,31 @@ def _find_constituents_table(tables: list[pd.DataFrame]) -> pd.DataFrame:
     raise ValueError("Unable to locate S&P 500 constituents table on Wikipedia page.")
 
 
+def _is_valid_common_stock(ticker: str, company_name: str) -> tuple[bool, str]:
+    """
+    Check if ticker/name represents a valid common stock (not ETF, fund, ADR, etc.).
+    Returns (is_valid, reason_if_invalid).
+    """
+    ticker_upper = ticker.upper()
+    name_lower = company_name.lower()
+    
+    # Check ticker patterns for share classes, preferreds, warrants
+    if any(suffix in ticker_upper for suffix in ["-P", ".P", "-W", ".W"]):
+        return False, f"Preferred or warrant ticker pattern: {ticker}"
+    
+    # Check company name for fund/ETF/ADR keywords
+    exclusion_keywords = [
+        "etf", "fund", "trust", "adr", "depositary", "preferred", "warrant",
+        "closed end", "closed-end", "exchange traded", "exchange-traded",
+    ]
+    
+    for keyword in exclusion_keywords:
+        if keyword in name_lower:
+            return False, f"Name contains exclusion keyword '{keyword}': {company_name}"
+    
+    return True, ""
+
+
 def fetch_sp500_constituents() -> list[Constituent]:
     resp = httpx.get(
         WIKIPEDIA_SP500_URL,
@@ -59,16 +84,27 @@ def fetch_sp500_constituents() -> list[Constituent]:
             raise ValueError(f"Missing expected column '{col}' from constituents table.")
 
     constituents: list[Constituent] = []
+    exclusions: list[str] = []
+    
     for row in df.to_dict(orient="records"):
         ticker = str(row["ticker"]).strip().upper()
         if not ticker:
             continue
+        
+        company_name = str(row.get("companyName", "")).strip()
+        
+        # Apply universe integrity filter
+        is_valid, reason = _is_valid_common_stock(ticker, company_name)
+        if not is_valid:
+            exclusions.append(f"{ticker}: {reason}")
+            continue
+        
         sub = row.get("subIndustry")
         constituents.append(
             Constituent(
                 ticker=ticker,
                 yahooTicker=normalize_yahoo_ticker(ticker),
-                companyName=str(row.get("companyName", "")).strip(),
+                companyName=company_name,
                 sector=str(row.get("sector", "")).strip(),
                 subIndustry=None if sub is None or pd.isna(sub) else str(sub).strip(),
             )
@@ -82,6 +118,14 @@ def fetch_sp500_constituents() -> list[Constituent]:
             continue
         seen.add(c.ticker)
         out.append(c)
+    
+    # Log exclusions for transparency
+    if exclusions:
+        print(f"[Universe Integrity] Excluded {len(exclusions)} non-common-stock entries from S&P 500:")
+        for exc in exclusions[:10]:  # Show first 10
+            print(f"  - {exc}")
+        if len(exclusions) > 10:
+            print(f"  ... and {len(exclusions) - 10} more")
 
     return out
 
@@ -204,18 +248,11 @@ def _fetch_nyse_smid_from_fmp(
         if exchange != "NYSE":
             continue
         
-        # Exclude funds, ETFs, ADRs, preferreds, warrants
-        # Check symbol patterns
-        if any(suffix in ticker for suffix in ["-P", ".P", "-W", ".W"]):
-            continue
-        
         company_name = row.get("companyName", ticker)
         
-        # Exclude common fund/ETF patterns in name
-        name_lower = company_name.lower()
-        if any(keyword in name_lower for keyword in [
-            "etf", "fund", "trust", "adr", "depositary", "preferred", "warrant"
-        ]):
+        # Apply universe integrity filter (same as S&P 500)
+        is_valid, reason = _is_valid_common_stock(ticker, company_name)
+        if not is_valid:
             continue
         
         # Sector/industry (FMP provides these)

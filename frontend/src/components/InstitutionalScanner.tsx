@@ -39,7 +39,8 @@ export default function InstitutionalScanner() {
   }, [limit, minScore, riskMode, regime]);
 
   const takeCandidates = data?.candidates.filter((c) => c.tradeGate.decision === "TAKE") ?? [];
-  const passCandidates = data?.candidates.filter((c) => c.tradeGate.decision === "PASS") ?? [];
+  const watchTierCandidates = data?.candidates.filter((c) => c.tradeGate.watchTier && c.tradeGate.decision === "PASS") ?? [];
+  const passCandidates = data?.candidates.filter((c) => c.tradeGate.decision === "PASS" && !c.tradeGate.watchTier) ?? [];
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-6">
@@ -185,7 +186,7 @@ export default function InstitutionalScanner() {
           </div>
 
           {/* Trade Gate Summary */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="rounded-lg border border-emerald-800 bg-emerald-950/30 p-4">
               <h3 className="mb-2 text-lg font-bold text-emerald-400">TAKE ({takeCandidates.length})</h3>
               <p className="text-sm text-slate-300">
@@ -193,11 +194,17 @@ export default function InstitutionalScanner() {
                 survive simulation scenarios, and meet minimum thresholds.
               </p>
             </div>
+            <div className="rounded-lg border border-amber-800 bg-amber-950/30 p-4">
+              <h3 className="mb-2 text-lg font-bold text-amber-400">WATCH ({watchTierCandidates.length})</h3>
+              <p className="text-sm text-slate-300">
+                Near-miss candidates failing on exactly one gate dimension. These are worth monitoring
+                as they're close to institutional quality.
+              </p>
+            </div>
             <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-4">
               <h3 className="mb-2 text-lg font-bold text-slate-400">PASS ({passCandidates.length})</h3>
               <p className="text-sm text-slate-300">
-                Ideas that don't meet the institutional-grade threshold. May have weak backtests,
-                insufficient samples, or failed simulation validation.
+                Ideas that don't meet the institutional-grade threshold on multiple dimensions.
               </p>
             </div>
           </div>
@@ -208,6 +215,21 @@ export default function InstitutionalScanner() {
               <h2 className="mb-4 text-xl font-bold text-emerald-400">TAKE - High-Confidence Trades</h2>
               <div className="space-y-4">
                 {takeCandidates.map((candidate) => (
+                  <CandidateCard key={candidate.ticker} candidate={candidate} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* WATCH Tier Candidates */}
+          {watchTierCandidates.length > 0 && (
+            <div>
+              <h2 className="mb-4 text-xl font-bold text-amber-400">WATCH - Near-Miss Candidates</h2>
+              <p className="mb-3 text-sm text-slate-400">
+                These candidates are failing on exactly one gate dimension. They're worth monitoring as small improvements could push them to TAKE.
+              </p>
+              <div className="space-y-4">
+                {watchTierCandidates.map((candidate) => (
                   <CandidateCard key={candidate.ticker} candidate={candidate} />
                 ))}
               </div>
@@ -434,6 +456,37 @@ function CandidateCard({ candidate }: { candidate: InstitutionalCandidate }) {
               ))}
             </div>
           </div>
+
+          {/* Gate Deltas - Show actual vs required values */}
+          {candidate.tradeGate.gateDeltas && (
+            <div>
+              <h4 className="mb-2 text-sm font-bold text-slate-300">Gate Deltas (Actual vs Required)</h4>
+              <div className="space-y-2 text-xs">
+                {Object.entries(candidate.tradeGate.gateDeltas).map(([key, delta]: [string, any]) => {
+                  const isPass = delta.pass;
+                  const gapText = key === "simulationSurvival" 
+                    ? (delta.failedScenarios?.length ? ` (Failed: ${delta.failedScenarios.join(", ")})` : "")
+                    : (typeof delta.delta === "number" ? ` (gap: ${Math.abs(delta.delta).toFixed(2)})` : "");
+                  
+                  return (
+                    <div key={key} className="flex items-center justify-between rounded bg-slate-900/30 p-2">
+                      <span className="font-medium text-slate-400">{key.replace(/([A-Z])/g, " $1").trim()}</span>
+                      <div className="text-right">
+                        <span className={isPass ? "text-emerald-400" : "text-red-400"}>
+                          {typeof delta.actual === "number" ? delta.actual.toFixed(2) : delta.actual}
+                        </span>
+                        <span className="text-slate-500"> / </span>
+                        <span className="text-slate-400">
+                          {typeof delta.required === "number" ? delta.required.toFixed(2) : delta.required}
+                        </span>
+                        {gapText && <span className="ml-1 text-xs text-slate-500">{gapText}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
