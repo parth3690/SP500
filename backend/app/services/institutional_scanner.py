@@ -284,8 +284,10 @@ def _compute_confidence(
     risk_score: float,
 ) -> dict[str, Any]:
     """
-    Compute calibrated confidence estimate from backtest and simulation results.
-    Returns confidence, sample size, and trustworthiness assessment.
+    Compute confidence estimate from backtest and simulation results.
+    
+    Uses the ORIGINAL formula (reverted from hand-tuned rescaling).
+    Empirical calibration is applied separately via _apply_empirical_calibration.
     """
     if not backtest["valid"]:
         return {
@@ -299,21 +301,21 @@ def _compute_confidence(
     win_rate = backtest["winRate"]
     alpha_vs_bench = backtest["alphaAvgReturn"]
 
-    # Base confidence from backtest
+    # Base confidence from backtest (ORIGINAL FORMULA)
     base_confidence = (
         win_rate * 0.50 + _clamp(alpha_vs_bench * 5.0, 0, 50) + alpha_score * 0.30
     )
 
-    # Penalize low sample size
+    # Penalize low sample size (ORIGINAL)
     if sample_size < MIN_BACKTEST_SAMPLE_SIZE:
         penalty = (MIN_BACKTEST_SAMPLE_SIZE - sample_size) / MIN_BACKTEST_SAMPLE_SIZE * 30
         base_confidence -= penalty
 
-    # Penalize if simulation scenarios don't all survive
+    # Penalize if simulation scenarios don't all survive (ORIGINAL)
     if not simulation["allScenariosSurvive"]:
         base_confidence *= 0.70
 
-    # Penalize low risk score
+    # Penalize low risk score (ORIGINAL)
     base_confidence = base_confidence * (risk_score / 100.0)
 
     confidence = _clamp(base_confidence, 0.0, 100.0)
@@ -343,6 +345,8 @@ def _apply_trade_gate(
     """
     Hard trade gate: only emit TAKE if confidence and historical accuracy are high enough.
     Otherwise PASS.
+    
+    Now includes detailed gate deltas showing actual vs required values for full transparency.
     """
     confidence = confidence_data["confidence"]
     win_rate = backtest.get("winRate", 0.0) or 0.0
@@ -364,17 +368,65 @@ def _apply_trade_gate(
         pass_simulation,
     ]) else "PASS"
 
+    # Compute gate deltas (actual - required) for transparency
+    gate_deltas = {
+        "confidence": {
+            "actual": round(confidence, 1),
+            "required": MIN_CONFIDENCE_FOR_TAKE,
+            "delta": round(confidence - MIN_CONFIDENCE_FOR_TAKE, 1),
+            "pass": pass_confidence,
+        },
+        "winRate": {
+            "actual": round(win_rate, 1),
+            "required": MIN_BACKTEST_WIN_RATE,
+            "delta": round(win_rate - MIN_BACKTEST_WIN_RATE, 1),
+            "pass": pass_win_rate,
+        },
+        "sampleSize": {
+            "actual": sample_size,
+            "required": MIN_BACKTEST_SAMPLE_SIZE,
+            "delta": sample_size - MIN_BACKTEST_SAMPLE_SIZE,
+            "pass": pass_sample_size,
+        },
+        "alphaVsBenchmark": {
+            "actual": round(alpha_vs_bench, 2),
+            "required": MIN_ALPHA_VS_BENCHMARK,
+            "delta": round(alpha_vs_bench - MIN_ALPHA_VS_BENCHMARK, 2),
+            "pass": pass_alpha,
+        },
+        "simulationSurvival": {
+            "actual": "all_survive" if simulation["allScenariosSurvive"] else "some_fail",
+            "required": "all_survive",
+            "failedScenarios": [
+                name
+                for name, scenario in simulation.get("scenarios", {}).items()
+                if not scenario.get("survives", False)
+            ],
+            "pass": pass_simulation,
+        },
+    }
+
     reasons = []
     if not pass_confidence:
-        reasons.append(f"Confidence {confidence:.1f}% < {MIN_CONFIDENCE_FOR_TAKE}%")
+        reasons.append(f"Confidence {confidence:.1f}% < {MIN_CONFIDENCE_FOR_TAKE}% (gap: {-gate_deltas['confidence']['delta']:.1f}%)")
     if not pass_win_rate:
-        reasons.append(f"Win rate {win_rate:.1f}% < {MIN_BACKTEST_WIN_RATE}%")
+        reasons.append(f"Win rate {win_rate:.1f}% < {MIN_BACKTEST_WIN_RATE}% (gap: {-gate_deltas['winRate']['delta']:.1f}%)")
     if not pass_sample_size:
-        reasons.append(f"Sample size {sample_size} < {MIN_BACKTEST_SAMPLE_SIZE}")
+        reasons.append(f"Sample size {sample_size} < {MIN_BACKTEST_SAMPLE_SIZE} (gap: {-gate_deltas['sampleSize']['delta']})")
     if not pass_alpha:
-        reasons.append(f"Alpha {alpha_vs_bench:.2f}% < {MIN_ALPHA_VS_BENCHMARK}%")
+        reasons.append(f"Alpha {alpha_vs_bench:.2f}% < {MIN_ALPHA_VS_BENCHMARK}% (gap: {-gate_deltas['alphaVsBenchmark']['delta']:.2f}%)")
     if not pass_simulation:
-        reasons.append("Does not survive all simulation scenarios")
+        failed = ", ".join(gate_deltas["simulationSurvival"]["failedScenarios"])
+        reasons.append(f"Failed simulation scenarios: {failed}")
+
+    # Count failures for watch-tier classification
+    num_failures = sum([
+        not pass_confidence,
+        not pass_win_rate,
+        not pass_sample_size,
+        not pass_alpha,
+        not pass_simulation,
+    ])
 
     return {
         "decision": decision,
@@ -386,6 +438,9 @@ def _apply_trade_gate(
             "alphaVsBenchmark": pass_alpha,
             "simulationSurvival": pass_simulation,
         },
+        "gateDeltas": gate_deltas,
+        "numFailures": num_failures,
+        "watchTier": num_failures == 1,  # True if failing on exactly one dimension
     }
 
 
@@ -443,6 +498,11 @@ def scan_institutional_grade(
     
     Returns a ranked book of candidates with TAKE/PASS decisions.
     """
+    # Track data quality
+    universe_size = len(constituents)
+    tickers_with_prices = set(close_prices.columns)
+    missing_tickers = [c.ticker for c in constituents if c.yahooTicker not in tickers_with_prices]
+    
     # First, get alpha candidates from existing engine
     alpha_result = compute_alpha_candidates(
         constituents,
@@ -467,6 +527,12 @@ def scan_institutional_grade(
                 **alpha_result["meta"],
                 "status": "no_candidates",
                 "scannerVersion": INSTITUTIONAL_SCANNER_VERSION,
+                "dataQuality": {
+                    "universeSize": universe_size,
+                    "withPriceData": len(tickers_with_prices),
+                    "missingPriceData": len(missing_tickers),
+                    "coveragePct": round(len(tickers_with_prices) / universe_size * 100, 1) if universe_size > 0 else 0,
+                },
             },
         }
 
@@ -474,6 +540,7 @@ def scan_institutional_grade(
     
     scanner_candidates: list[dict[str, Any]] = []
     convexity_alerts: list[dict[str, Any]] = []
+    skipped_no_price = 0
 
     for candidate in alpha_result["candidates"]:
         ticker = candidate["ticker"]
@@ -486,6 +553,7 @@ def scan_institutional_grade(
                 break
         
         if not yahoo_ticker or yahoo_ticker not in close_prices.columns:
+            skipped_no_price += 1
             continue
 
         stock = close_prices[yahoo_ticker].dropna()
@@ -562,11 +630,16 @@ def scan_institutional_grade(
     # Re-rank
     for idx, candidate in enumerate(scanner_candidates[:limit], start=1):
         candidate["rank"] = idx
+    
+    # Separate watch-tier candidates (exactly 1 gate failure)
+    limited_candidates = scanner_candidates[:limit]
+    watch_tier_candidates = [c for c in limited_candidates if c["tradeGate"].get("watchTier", False)]
+    take_candidates = [c for c in limited_candidates if c["tradeGate"]["decision"] == "TAKE"]
 
     return {
         "asOf": datetime.now(timezone.utc).isoformat(),
         "marketRegime": alpha_result["marketRegime"],
-        "candidates": scanner_candidates[:limit],
+        "candidates": limited_candidates,
         "convexityAlerts": convexity_alerts,
         "meta": {
             **alpha_result["meta"],
@@ -583,6 +656,18 @@ def scan_institutional_grade(
             "convexityAlert": {
                 "minProbability": CONVEXITY_ALERT_MIN_PROBABILITY,
                 "minReturn": f"{CONVEXITY_ALERT_MIN_RETURN:.0f}x",
+            },
+            "dataQuality": {
+                "universeSize": universe_size,
+                "withPriceData": len(tickers_with_prices),
+                "missingPriceData": len(missing_tickers),
+                "coveragePct": round(len(tickers_with_prices) / universe_size * 100, 1) if universe_size > 0 else 0,
+                "skippedNoPriceInAlpha": skipped_no_price,
+            },
+            "summary": {
+                "takeCount": len(take_candidates),
+                "watchTierCount": len(watch_tier_candidates),
+                "totalScanned": len(limited_candidates),
             },
         },
     }

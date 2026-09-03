@@ -591,6 +591,14 @@ export type InstitutionalConfidence = {
   reason: string;
 };
 
+export type InstitutionalGateDelta = {
+  actual: any;
+  required: any;
+  delta?: any;
+  pass: boolean;
+  failedScenarios?: string[];
+};
+
 export type InstitutionalTradeGate = {
   decision: "TAKE" | "PASS";
   reasons: string[];
@@ -601,6 +609,9 @@ export type InstitutionalTradeGate = {
     alphaVsBenchmark: boolean;
     simulationSurvival: boolean;
   };
+  gateDeltas: Record<string, InstitutionalGateDelta>;
+  numFailures: number;
+  watchTier: boolean;
 };
 
 export type InstitutionalConvexityAlert = {
