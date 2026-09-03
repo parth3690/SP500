@@ -467,7 +467,7 @@ def should_keep_change(baseline_metrics: dict[str, Any], new_metrics: dict[str, 
     - More TAKE decisions (as long as they're valid)
     - Higher quality TAKEs (better wr/alpha/confidence/sample)
     - Better best candidate score (getting closer to gate)
-    - Higher overall quality score
+    - Meaningful improvement in quality score (>2% gain)
     
     Returns (keep: bool, reason: str)
     """
@@ -491,15 +491,16 @@ def should_keep_change(baseline_metrics: dict[str, Any], new_metrics: dict[str, 
     
     # If neither has TAKEs, compare best candidate (getting closer to gate)
     if new_metrics["take_count"] == 0 and baseline_metrics["take_count"] == 0:
-        if new_metrics["best_candidate_score"] > baseline_metrics["best_candidate_score"] + 1.0:
+        if new_metrics["best_candidate_score"] > baseline_metrics["best_candidate_score"] + 2.0:
             return True, f"Better candidate score: {baseline_metrics['best_candidate_score']:.1f}% → {new_metrics['best_candidate_score']:.1f}%"
     
-    # Overall quality score comparison
-    if new_metrics["quality_score"] > baseline_metrics["quality_score"] * 1.05:  # 5% improvement
-        return True, f"Quality score improved: {baseline_metrics['quality_score']:.1f} → {new_metrics['quality_score']:.1f}"
+    # Overall quality score comparison (require >2% improvement to avoid noise)
+    quality_improvement_pct = (new_metrics["quality_score"] - baseline_metrics["quality_score"]) / abs(baseline_metrics["quality_score"]) * 100 if baseline_metrics["quality_score"] != 0 else 0
+    if quality_improvement_pct > 2.0:
+        return True, f"Quality score improved {quality_improvement_pct:.1f}%: {baseline_metrics['quality_score']:.1f} → {new_metrics['quality_score']:.1f}"
     
     # Default: don't keep
-    return False, f"No improvement (quality: {baseline_metrics['quality_score']:.1f} vs {new_metrics['quality_score']:.1f})"
+    return False, f"No meaningful improvement (best: {baseline_metrics['best_candidate_score']:.1f}% vs {new_metrics['best_candidate_score']:.1f}%, quality: {baseline_metrics['quality_score']:.1f} vs {new_metrics['quality_score']:.1f})"
 
 
 class DeltaCheckpointManager:

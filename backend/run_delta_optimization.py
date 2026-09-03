@@ -23,6 +23,7 @@ import argparse
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any, Optional
 
 # Add workspace root to path
 workspace_root = Path(__file__).parent.parent
@@ -283,6 +284,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Import needs to be here to avoid circular import
-    from typing import Any, Optional
     sys.exit(main())
